@@ -483,16 +483,6 @@ declare class ClaudeSupervisor {
    *  and a restored message has already lost the insertion that would wake an
    *  idle driver. */
   canSteer(sessionId: string): boolean;
-  /** Deliver one more user message into the turn a session is already running.
-   *
-   *  Claude Code reads a message pushed into its input stream at the next model
-   *  step of the running turn, which is what steering means here: the turn is
-   *  not restarted and its context is not reloaded. The turn then owns one more
-   *  prompt uuid, so the result that answers the message it was already working
-   *  on no longer looks like a protocol violation.
-   *
-   *  `unavailable` means there is no live turn to steer, and the caller must
-   *  keep its message for a later turn rather than drop it. */
   deliverSteering(sessionId: string, prompt: SDKUserMessage['message']['content']): ClaudeSteeringOutcome;
   runTurn(request: ClaudeTurnRequest): Promise<AsyncIterable<ClaudeTurnStreamEvent>>;
   limitsChanged(): void;

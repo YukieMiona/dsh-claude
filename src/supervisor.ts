@@ -463,6 +463,7 @@ function pluginDrawnUnderNative(activity: ClaudeActivityInput): boolean {
 export class ClaudeSupervisor {
   readonly #entries = new Map<string, SupervisorEntry>()
   readonly #interruptions = new Map<string, Promise<void>>()
+  readonly #activeWakeups = new Map<string, { timer: ReturnType<typeof setTimeout>; targetTime: number; prompt: string; reason: string }>()
   readonly #runtime: Pick<SubprocessRuntime, 'spawn' | 'resolveExecutable'>
   readonly #approval: Pick<ApprovalService, 'request'>
   readonly #userQuestions: Pick<UserQuestionService, 'ask'>
@@ -612,6 +613,58 @@ export class ClaudeSupervisor {
    *
    *  `unavailable` means there is no live turn to steer, and the caller must
    *  keep its message for a later turn rather than drop it. */
+  #handleScheduleWakeup(entry: SupervisorEntry, rawInput: unknown): void {
+    const input = rawInput as { delaySeconds?: number; prompt?: string; reason?: string; stop?: boolean } | undefined
+    const sessionId = entry.sessionId
+    const existing = this.#activeWakeups.get(sessionId)
+    if (existing !== undefined) {
+      clearTimeout(existing.timer)
+      this.#activeWakeups.delete(sessionId)
+    }
+    if (input?.stop === true) {
+      this.#logger?.warn(`dsh-claude: cancelled scheduled wakeup for ${sessionId}`)
+      return
+    }
+    const delaySeconds = typeof input?.delaySeconds === 'number' && Number.isFinite(input.delaySeconds)
+      ? Math.min(Math.max(input.delaySeconds, 1), 86_400)
+      : undefined
+    if (delaySeconds === undefined) return
+    const prompt = typeof input?.prompt === 'string' && input.prompt.trim().length > 0
+      ? input.prompt.trim()
+      : '/loop'
+    const reason = typeof input?.reason === 'string' ? input.reason : 'Claude Code scheduled wakeup'
+    const delayMs = delaySeconds * 1_000
+    const targetTime = Date.now() + delayMs
+    const timer = setTimeout(() => {
+      this.#activeWakeups.delete(sessionId)
+      void this.#dispatchWakeup(entry, prompt, reason)
+    }, delayMs)
+    this.#activeWakeups.set(sessionId, { timer, targetTime, prompt, reason })
+    this.#logger?.warn(`dsh-claude: scheduled wakeup in ${delaySeconds}s for ${sessionId}: ${reason}`)
+  }
+
+  async #dispatchWakeup(entry: SupervisorEntry, prompt: string, reason: string): Promise<void> {
+    try {
+      const agent = entry.ownerAgent
+      if (agent === undefined) return
+      if (entry.active !== undefined && this.canSteer(entry.sessionId)) {
+        this.deliverSteering(entry.sessionId, prompt)
+        return
+      }
+      const messageId = randomUUID()
+      const userMessage = {
+        id: messageId,
+        role: 'user' as const,
+        source: { kind: 'user' as const },
+        content: [{ type: 'text' as const, text: prompt }],
+      }
+      agent.session.append('user/message', userMessage, { surfaceOp: 'append' })
+      this.#logger?.warn(`dsh-claude: dispatched scheduled wakeup for ${entry.sessionId} (${reason})`)
+    } catch (error) {
+      this.#logger?.warn(`dsh-claude: failed to dispatch wakeup for ${entry.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   deliverSteering(sessionId: string, prompt: SDKUserMessage['message']['content']): ClaudeSteeringOutcome {
     const entry = this.#entries.get(sessionId)
     const active = entry?.active
@@ -1164,6 +1217,8 @@ export class ClaudeSupervisor {
     const pendingMetadata = this.#cancelMetadataAdmissions(() => true)
     const entries = [...this.#entries.values()]
     this.#entries.clear()
+    for (const wakeup of this.#activeWakeups.values()) clearTimeout(wakeup.timer)
+    this.#activeWakeups.clear()
     this.#notifyCapacityChange()
     await Promise.allSettled([
       ...pendingAdmissions,
@@ -1514,6 +1569,9 @@ export class ClaudeSupervisor {
           detail: message.input,
         })
         // The lead's own list, or the task board every member shares.
+        if (message.toolName === 'ScheduleWakeup') {
+          this.#handleScheduleWakeup(entry, message.input)
+        }
         if (message.toolName === 'TodoWrite' && message.parentToolUseId === undefined) {
           const todos = todosFromTodoWrite(message.input)
           if (todos !== undefined) await this.#writeTodos(active, todos)
@@ -2299,6 +2357,11 @@ export class ClaudeSupervisor {
    *  turn's failure text, so a kill the plugin asked for names its cause. */
   async #disposeEntry(entry: SupervisorEntry, reason: string): Promise<void> {
     if (entry.state === 'disposed') return
+    const wakeup = this.#activeWakeups.get(entry.sessionId)
+    if (wakeup !== undefined) {
+      clearTimeout(wakeup.timer)
+      this.#activeWakeups.delete(entry.sessionId)
+    }
     entry.disposeReason = reason
     if (entry.idleTimer !== undefined) clearTimeout(entry.idleTimer)
     entry.state = 'disposed'
