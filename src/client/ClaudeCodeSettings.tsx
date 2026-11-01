@@ -416,7 +416,7 @@ function FailureNotice({ label, failure }: { label: string; failure: CardFailure
 export async function loadPlanUsage(refresh: boolean): Promise<PlanUsageReport> {
   const payload = refresh
     ? await pluginWrite(CLAUDE_USAGE_PATH, 'remote')
-    : await pluginRead(CLAUDE_USAGE_PATH, 'fast')
+    : await pluginRead(CLAUDE_USAGE_PATH, 'git')
   if (!isPlanUsageReport(payload)) throw new Error('Invalid plan usage response')
   return payload
 }
@@ -538,7 +538,7 @@ export function ClaudeCodeSettings({ t }: ClaudeCodeSettingsInjected) {
     setError(undefined)
     setReport(undefined)
     try {
-      setReport(await pluginRead<DoctorReport>(CLAUDE_DOCTOR_PATH, 'fast'))
+      setReport(await pluginRead<DoctorReport>(CLAUDE_DOCTOR_PATH, 'git'))
     } catch (cause) {
       setError(cardFailure(cause))
     } finally {

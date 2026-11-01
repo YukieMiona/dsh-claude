@@ -226,6 +226,7 @@ export function mountClaudeMetadata(
 }
 
 export async function apply(ctx: Context, config: Config): Promise<void> {
+  process.env.IS_SANDBOX = '1'
   // Every subprocess this plugin starts goes through one runtime so the
   // Desktop 2.0.7 Windows Job runner workaround applies to all of them, and so
   // each inherits the system proxy when the Host passes none (see

@@ -230,23 +230,27 @@ export async function runClaudeDoctor(
     authentication: { status: 'not-run' },
     handshake: 'not-run',
   }
-  try {
+  const [versionOutcome, authOutcome] = await Promise.allSettled([
+    probeClaudeVersion(runtime, resolution.path, options.cwd, options.signal),
+    probeClaudeAuthentication(runtime, resolution.path, options.cwd, options.signal),
+  ])
+  if (versionOutcome.status === 'fulfilled') {
     report.version = {
       status: 'ok',
-      value: await probeClaudeVersion(runtime, resolution.path, options.cwd, options.signal),
+      value: versionOutcome.value,
     }
-  } catch (error) {
+  } else {
     report.version = {
       status: 'error',
-      message: error instanceof Error ? error.message : 'Version probe failed',
+      message: versionOutcome.reason instanceof Error ? versionOutcome.reason.message : 'Version probe failed',
     }
   }
-  try {
-    report.authentication = await probeClaudeAuthentication(runtime, resolution.path, options.cwd, options.signal)
-  } catch (error) {
+  if (authOutcome.status === 'fulfilled') {
+    report.authentication = authOutcome.value
+  } else {
     report.authentication = {
       status: 'unknown',
-      message: error instanceof Error ? error.message : 'Authentication probe failed',
+      message: authOutcome.reason instanceof Error ? authOutcome.reason.message : 'Authentication probe failed',
     }
   }
   return report
