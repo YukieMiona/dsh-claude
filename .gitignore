@@ -1,10 +1,19 @@
 node_modules/
-lib/
 dist/
 coverage/
 dist-pack/
 *.tgz
 .DS_Store
+lib/*.map
+000 temp/
+
+# Seven-component temporary and local states
+00 orig/
+01 reference/
+02 manual/
+03 agents/
+04 checking/
+05 output/
 
 # Never commit tsc emit artifacts beside source (typecheck runs with noEmit).
 src/**/*.js

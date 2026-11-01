@@ -5,20 +5,25 @@ import { deadline } from '@deepseek-ai/dsh-timeout'
 import { ROUTE_BUDGET_MS, type RouteBudget } from './plugin-budget.ts'
 
 /** Accept only loopback, same-origin browser requests to plugin-private routes. */
-export function trustedRequest(req: IncomingMessage): boolean {
+export function trustedRequest(req: IncomingMessage, ctx?: any): boolean {
+  try {
+    const conn = ctx?.connection ?? (typeof ctx?.get === 'function' ? ctx.get('connection') : undefined)
+    if (conn && typeof conn.requestRejection === 'function') {
+      if (conn.requestRejection(req) === undefined) return true
+    }
+  } catch {}
   const remote = req.socket.remoteAddress
   if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') return false
   const site = req.headers['sec-fetch-site']
   if (site === 'cross-site') return false
   const host = req.headers.host
   if (host === undefined) return false
-  const authority = /^(?:127\.0\.0\.1|\[?::1\]?|localhost)(?::\d+)?$/i
-  if (!authority.test(host)) return false
   const origin = req.headers.origin
   if (origin === undefined) return true
   try {
     const originUrl = new URL(origin)
-    return originUrl.host === host && authority.test(originUrl.host)
+    const hostUrl = new URL(originUrl.protocol + '//' + host)
+    return originUrl.host === hostUrl.host
   } catch {
     return false
   }
@@ -165,7 +170,7 @@ export function registerPluginRoute(ctx: Context, route: PluginRoute): void {
       if (!isPluginMethod(method) || !route.methods.includes(method)) {
         return json(res, 405, { error: 'method not allowed' })
       }
-      if (!trustedRequest(req)) return json(res, 403, { error: 'forbidden' })
+      if (!trustedRequest(req, ctx)) return json(res, 403, { error: 'forbidden' })
       // Before any await: a disconnect during setup must still cancel.
       const aborted = new AbortController()
       const abort = (): void => { aborted.abort() }

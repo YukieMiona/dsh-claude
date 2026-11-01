@@ -41,10 +41,10 @@ export function clientBudgetMs(budget: RouteBudget): number {
 
 /** A request that never got a permit fails fast and says so, rather than
  *  spending its whole budget queued behind work it cannot see. */
-export const QUEUE_WAIT_BUDGET_MS = 4_000
+export const QUEUE_WAIT_BUDGET_MS = 60_000
 
 /** Connections this plugin may hold at once, across every lane. */
-export const PLUGIN_GLOBAL_PERMITS = 4
+export const PLUGIN_GLOBAL_PERMITS = 16
 
 /** Per-lane ceilings inside the global budget.
  *
@@ -53,7 +53,7 @@ export const PLUGIN_GLOBAL_PERMITS = 4
  *  can take: a diagnostic read always has somewhere to go, however many slow
  *  actions are in flight. That invariant is what stops a 150s repository
  *  action from reproducing the original symptom through a new mechanism. */
-export const PLUGIN_LANE_CAPS = { read: 2, write: 1, stream: 1 } as const
+export const PLUGIN_LANE_CAPS = { read: 8, write: 4, stream: 2 } as const
 
 export type PluginLane = keyof typeof PLUGIN_LANE_CAPS
 

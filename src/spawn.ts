@@ -136,7 +136,12 @@ export function createManagedClaudeSpawner(
       env: appendToolPaths(scrubClaudeSpawnEnv({
         CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
         CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
+        IS_SANDBOX: '1',
+        HOME: process.env.HOME || '/root',
+        USER: process.env.USER || 'root',
+        GIT_CONFIG_GLOBAL: '/root/.dsh/git-forge/gitconfig',
         ...options.env,
+        IS_SANDBOX: '1',
       })),
     })
     const managed = new ManagedClaudeProcess(handle)

@@ -98,6 +98,11 @@ export interface ClaudeBootFailure {
   error: unknown
 }
 
+let cachedDoctorReport: any = null
+let cachedDoctorAt = 0
+let doctorInflight: Promise<any> | null = null
+const DOCTOR_CACHE_TTL_MS = 10_000
+
 export function registerClaudeDoctorRoutes(
   ctx: Context,
   runtime: ExecutableRuntime,
@@ -130,13 +135,26 @@ export function registerClaudeDoctorRoutes(
             processes: { count: 0, active: 0 },
           } }
         }
-        const report = await runClaudeDoctor(runtime, {
-          configuredPath: config.executablePath,
-          cwd: process.cwd(),
-          // Threaded so freeing the socket also stops the probe, rather than
-          // leaving a spawn nobody is waiting for; the ceiling stays its own.
-          signal: AbortSignal.any([io.signal, AbortSignal.timeout(CLAUDE_DOCTOR_PROBE_TIMEOUT_MS)]),
-        })
+        const now = Date.now()
+        let report: any
+        if (cachedDoctorReport !== null && now - cachedDoctorAt < DOCTOR_CACHE_TTL_MS) {
+          report = { ...cachedDoctorReport }
+        } else {
+          if (!doctorInflight) {
+            doctorInflight = runClaudeDoctor(runtime, {
+              configuredPath: config.executablePath,
+              cwd: process.cwd(),
+              signal: AbortSignal.any([io.signal, AbortSignal.timeout(CLAUDE_DOCTOR_PROBE_TIMEOUT_MS)]),
+            }).then(res => {
+              cachedDoctorReport = res
+              cachedDoctorAt = Date.now()
+              return res
+            }).finally(() => {
+              doctorInflight = null
+            })
+          }
+          report = { ...(await doctorInflight) }
+        }
         const processes = supervisor.snapshots()
         if (processes.some(process => process.claudeSessionId !== undefined)) report.handshake = 'ok'
         return { status: 200, value: {

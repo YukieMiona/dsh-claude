@@ -1722,9 +1722,11 @@ export class ClaudeSupervisor {
   }
 
   #hasRunningTasks(entry: SupervisorEntry, active: ActiveTurn): boolean {
-    return [...entry.tasks.values()].some(task => (
-      task.originTurn === active.cursor.turn && task.backgrounded === true && task.status === 'running'
-    ))
+    return [...entry.tasks.values()].some(task => {
+      if (task.status !== 'running') return false
+      if (task.originTurn !== undefined && active?.cursor?.turn !== undefined && task.originTurn !== active.cursor.turn) return false
+      return task.backgrounded === true || hostJobKind(task.taskType) === 'subagent' || task.taskType === 'local_agent' || task.taskType === 'in_process_teammate'
+    })
   }
 
   async #continueAfterTasks(entry: SupervisorEntry): Promise<void> {
@@ -1944,7 +1946,7 @@ export class ClaudeSupervisor {
         active.output.push({ type: 'text-delta', text: result.text })
       }
       await this.#upsertTranscriptText(active)
-      if (active.phase === 'primary' && this.#hasRunningTasks(entry, active)) {
+      if ((active.phase === 'primary' || active.phase === 'follow-up') && this.#hasRunningTasks(entry, active)) {
         active.phase = 'waiting-tasks'
         await this.#appendSafely(active, {
           kind: 'status',
