@@ -73,7 +73,7 @@ const PERMISSION_SELECT_CSS = [
  *  which is Claude sessions alone; other presets keep the native one. */
 const AGENT_TEAM_CSS = 'header:has(.dsh-claude-team-root) [data-team-action]{display:none}'
 
-const MOBILE_VIEWPORT_CSS = 'html,body{width:100%;height:100%;height:100dvh;overflow:hidden;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}#root{width:100%;height:100%;height:100dvh;overflow:hidden;overscroll-behavior-y:none}'
+const MOBILE_VIEWPORT_CSS = 'html,body{width:100%;height:100%;height:100dvh;overflow:hidden;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}#root{width:100%;height:100%;height:100dvh;overflow:hidden;overscroll-behavior-y:none}@media (max-width: 600px){[class*="_tools"]{position:relative!important;z-index:25!important}[class*="_add"]{position:relative!important;z-index:30!important;pointer-events:auto!important}[class*="_trailing"]{pointer-events:none!important}[class*="_trailing"]>*,[class*="_trailing"] button,[class*="_trailing"] [role="button"]{pointer-events:auto!important}}'
 
 export const HOST_CHROME_CSS = `${SESSION_LOG_CSS}${HEADER_TABS_CSS}${PRESET_SEAT_CSS}${PERMISSION_SELECT_CSS}${AGENT_TEAM_CSS}${MOBILE_VIEWPORT_CSS}`
 
