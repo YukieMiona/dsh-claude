@@ -73,7 +73,9 @@ const PERMISSION_SELECT_CSS = [
  *  which is Claude sessions alone; other presets keep the native one. */
 const AGENT_TEAM_CSS = 'header:has(.dsh-claude-team-root) [data-team-action]{display:none}'
 
-export const HOST_CHROME_CSS = `${SESSION_LOG_CSS}${HEADER_TABS_CSS}${PRESET_SEAT_CSS}${PERMISSION_SELECT_CSS}${AGENT_TEAM_CSS}`
+const MOBILE_VIEWPORT_CSS = 'html,body{width:100%;height:100%;height:100dvh;overflow:hidden;overscroll-behavior-y:none;-webkit-overflow-scrolling:touch}#root{width:100%;height:100%;height:100dvh;overflow:hidden;overscroll-behavior-y:none}'
+
+export const HOST_CHROME_CSS = `${SESSION_LOG_CSS}${HEADER_TABS_CSS}${PRESET_SEAT_CSS}${PERMISSION_SELECT_CSS}${AGENT_TEAM_CSS}${MOBILE_VIEWPORT_CSS}`
 
 /** Install the stylesheet and the one DOM flag it depends on.
  *  @returns a disposer that removes both again. */

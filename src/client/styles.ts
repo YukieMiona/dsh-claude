@@ -3362,6 +3362,16 @@ export const permissionSelectCss = `
 .${permissionSelectLabelClass} { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .${permissionSelectChevronClass} { flex: none; transition: transform 120ms ease; }
 .${permissionSelectChevronClass}[data-open] { transform: rotate(180deg); }
+@media (max-width: 600px) {
+  .${permissionSelectTriggerClass} {
+    max-width: 32px;
+    padding: 0 6px;
+    justify-content: center;
+  }
+  .${permissionSelectLabelClass}, .${permissionSelectChevronClass} {
+    display: none !important;
+  }
+}
 `
 
 export const permissionSelectRowClass = 'dshClaudePermissionSelectRow'
