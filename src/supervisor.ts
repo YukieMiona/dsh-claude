@@ -634,34 +634,35 @@ export class ClaudeSupervisor {
       : '/loop'
     const reason = typeof input?.reason === 'string' ? input.reason : 'Claude Code scheduled wakeup'
     const delayMs = delaySeconds * 1_000
-    const targetTime = Date.now() + delayMs
+
     const timer = setTimeout(() => {
       this.#activeWakeups.delete(sessionId)
-      void this.#dispatchWakeup(entry, prompt, reason)
+      this.#dispatchWakeup(sessionId, prompt, reason)
     }, delayMs)
-    this.#activeWakeups.set(sessionId, { timer, targetTime, prompt, reason })
+    timer.unref?.()
+
+    this.#activeWakeups.set(sessionId, { timer, targetTime: Date.now() + delayMs, prompt, reason })
     this.#logger?.warn(`dsh-claude: scheduled wakeup in ${delaySeconds}s for ${sessionId}: ${reason}`)
   }
 
-  async #dispatchWakeup(entry: SupervisorEntry, prompt: string, reason: string): Promise<void> {
+  #dispatchWakeup(sessionId: string, prompt: string, reason: string): void {
     try {
-      const agent = entry.ownerAgent
-      if (agent === undefined) return
-      if (entry.active !== undefined && this.canSteer(entry.sessionId)) {
-        this.deliverSteering(entry.sessionId, prompt)
+      const entry = this.#entries.get(sessionId)
+      const agent = entry?.ownerAgent
+      if (agent === undefined) {
+        this.#logger?.warn(`dsh-claude: cannot dispatch wakeup for ${sessionId}, owner agent unavailable`)
         return
       }
-      const messageId = randomUUID()
-      const userMessage = {
-        id: messageId,
+      const message = {
+        id: randomUUID(),
         role: 'user' as const,
         source: { kind: 'user' as const },
         content: [{ type: 'text' as const, text: prompt }],
       }
-      agent.session.append('user/message', userMessage, { surfaceOp: 'append' })
-      this.#logger?.warn(`dsh-claude: dispatched scheduled wakeup for ${entry.sessionId} (${reason})`)
+      agent.followup(message)
+      this.#logger?.warn(`dsh-claude: dispatched scheduled wakeup for ${sessionId} (${reason})`)
     } catch (error) {
-      this.#logger?.warn(`dsh-claude: failed to dispatch wakeup for ${entry.sessionId}: ${error instanceof Error ? error.message : String(error)}`)
+      this.#logger?.warn(`dsh-claude: failed to dispatch wakeup for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -1569,7 +1570,7 @@ export class ClaudeSupervisor {
           detail: message.input,
         })
         // The lead's own list, or the task board every member shares.
-        if (message.toolName === 'ScheduleWakeup') {
+        if (message.toolName === 'ScheduleWakeup' && message.parentToolUseId === undefined) {
           this.#handleScheduleWakeup(entry, message.input)
         }
         if (message.toolName === 'TodoWrite' && message.parentToolUseId === undefined) {
@@ -2357,11 +2358,7 @@ export class ClaudeSupervisor {
    *  turn's failure text, so a kill the plugin asked for names its cause. */
   async #disposeEntry(entry: SupervisorEntry, reason: string): Promise<void> {
     if (entry.state === 'disposed') return
-    const wakeup = this.#activeWakeups.get(entry.sessionId)
-    if (wakeup !== undefined) {
-      clearTimeout(wakeup.timer)
-      this.#activeWakeups.delete(entry.sessionId)
-    }
+
     entry.disposeReason = reason
     if (entry.idleTimer !== undefined) clearTimeout(entry.idleTimer)
     entry.state = 'disposed'
