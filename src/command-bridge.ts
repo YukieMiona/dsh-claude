@@ -25,7 +25,7 @@ function registryName(claudeName: string): string | undefined {
  * be registered by this bridge. Keep in sync with the client bundles:
  * dsh-client-ui-model-selection registers "model".
  */
-const CLIENT_CONTRIBUTION_NAMES: ReadonlySet<string> = new Set(['model'])
+const CLIENT_CONTRIBUTION_NAMES: ReadonlySet<string> = new Set(['model', 'settings', 'compact', 'plan', 'clear', 'export'])
 
 export interface ClaudeCommandTarget {
   list(): readonly Pick<CommandDescriptor, 'name'>[]
