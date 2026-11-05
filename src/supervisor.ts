@@ -654,7 +654,7 @@ export class ClaudeSupervisor {
         return
       }
       const message = {
-        id: randomUUID(),
+        id: randomUUID() as any,
         role: 'user' as const,
         source: { kind: 'user' as const },
         content: [{ type: 'text' as const, text: prompt }],
@@ -1487,7 +1487,17 @@ export class ClaudeSupervisor {
           await this.#completeTurn(entry, active, message)
           return
         }
-        // Primary-turn mismatches remain protocol failures.
+        // If the CLI still has turns queued, this foreign result belongs to an
+        // earlier queued turn (e.g. previous turn folded or completed late).
+        // Absorb it as a progress segment and wait for the active prompt's result.
+        if ((message.queuedTurnCount ?? 0) > 0) {
+          this.#logger?.warn?.(
+            `dsh-claude: absorbed foreign result for user message ${message.userMessageUuid} while active prompt ${active.promptUuid} is queued (${message.queuedTurnCount} turns remaining)`,
+          )
+          await this.#completeProgressSegment(active, message)
+          return
+        }
+        // Primary-turn mismatches with no queued turns remain protocol failures.
         throw new ClaudeProtocolError(`Claude Code result for user message ${message.userMessageUuid} does not match active request ${active.promptUuid}`)
       }
       // A steered send the CLI had not reached when it produced this result is

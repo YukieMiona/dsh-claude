@@ -2093,6 +2093,45 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('absorbs an earlier queued turn result as a progress segment without rejecting the turn', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
+    const activeUuid = (runtime.snapshots()[0] as any)?.active?.promptUuid
+    transport.queries[0]!.push(init())
+    // Earlier queued result arrives while the active turn is still queued:
+    transport.queries[0]!.push({
+      type: 'result',
+      subtype: 'success',
+      session_id: 'claude-session-1',
+      user_message_uuid: 'earlier-queued-user-message',
+      result: 'earlier segment output',
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      queued_turn_count: 1,
+    } as SDKMessage)
+    // The active turn result arrives next:
+    transport.queries[0]!.push(delta('final output'))
+    transport.queries[0]!.push({
+      type: 'result',
+      subtype: 'success',
+      session_id: 'claude-session-1',
+      user_message_uuid: activeUuid,
+      result: 'final output',
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      queued_turn_count: 0,
+    } as SDKMessage)
+    const collected = await collect(output)
+    expect(collected).toEqual(expect.arrayContaining([
+      { type: 'text-delta', text: 'final output' },
+      { type: 'complete', text: 'final output' },
+    ]))
+    expect(runtime.snapshots()[0]).toMatchObject({ state: 'idle' })
+    await runtime.dispose()
+  })
+
   it('tears down the submitted turn when DSH aborts', async () => {
     const transport = factory()
     const owner = fakeAgent()
