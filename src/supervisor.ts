@@ -460,10 +460,51 @@ function pluginDrawnUnderNative(activity: ClaudeActivityInput): boolean {
     || (activity.kind === 'subagent' && activity.parentToolUseId !== undefined)
 }
 
+function parseCronDelayMs(cron: string): number {
+  if (typeof cron !== 'string') return 600_000
+  const parts = cron.trim().split(/\s+/)
+  if (parts.length >= 5) {
+    const min = parts[0] ?? ''
+    const hour = parts[1] ?? ''
+    const dom = parts[2] ?? ''
+    const stepMin = min.match(/^\*\/(\d+)$/)
+    if (stepMin && stepMin[1] !== undefined) {
+      const n = parseInt(stepMin[1], 10)
+      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 60_000, 10_000), 86_400_000)
+    }
+    const stepHour = hour.match(/^\*\/(\d+)$/)
+    if (stepHour && stepHour[1] !== undefined && (min === '0' || min === '*')) {
+      const n = parseInt(stepHour[1], 10)
+      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 3_600_000, 10_000), 86_400_000)
+    }
+    const stepDay = dom.match(/^\*\/(\d+)$/)
+    if (stepDay && stepDay[1] !== undefined && min === '0' && hour === '0') {
+      const n = parseInt(stepDay[1], 10)
+      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 86_400_000, 10_000), 86_400_000)
+    }
+    const now = new Date()
+    const targetMinMatch = min.match(/^(\d+)$/)
+    const targetHourMatch = hour.match(/^(\d+)$/)
+    const targetMin = targetMinMatch && targetMinMatch[1] !== undefined ? parseInt(targetMinMatch[1], 10) : undefined
+    const targetHour = targetHourMatch && targetHourMatch[1] !== undefined ? parseInt(targetHourMatch[1], 10) : undefined
+    if (targetMin !== undefined && targetHour !== undefined) {
+      const next = new Date(now)
+      next.setSeconds(0, 0)
+      next.setHours(targetHour, targetMin)
+      if (next.getTime() <= now.getTime()) {
+        next.setDate(next.getDate() + 1)
+      }
+      return Math.max(next.getTime() - now.getTime(), 10_000)
+    }
+  }
+  return 600_000
+}
+
 export class ClaudeSupervisor {
   readonly #entries = new Map<string, SupervisorEntry>()
   readonly #interruptions = new Map<string, Promise<void>>()
   readonly #activeWakeups = new Map<string, { timer: ReturnType<typeof setTimeout>; targetTime: number; prompt: string; reason: string }>()
+  readonly #activeCrons = new Map<string, { timer: ReturnType<typeof setTimeout>; cron: string; prompt: string; recurring: boolean }>()
   readonly #runtime: Pick<SubprocessRuntime, 'spawn' | 'resolveExecutable'>
   readonly #approval: Pick<ApprovalService, 'request'>
   readonly #userQuestions: Pick<UserQuestionService, 'ask'>
@@ -643,6 +684,49 @@ export class ClaudeSupervisor {
 
     this.#activeWakeups.set(sessionId, { timer, targetTime: Date.now() + delayMs, prompt, reason })
     this.#logger?.warn(`dsh-claude: scheduled wakeup in ${delaySeconds}s for ${sessionId}: ${reason}`)
+  }
+
+  #handleCronCreate(entry: SupervisorEntry, rawInput: unknown): void {
+    const input = rawInput as { cron?: string; prompt?: string; recurring?: boolean } | undefined
+    const sessionId = entry.sessionId
+    const existing = this.#activeCrons.get(sessionId)
+    if (existing !== undefined) {
+      clearTimeout(existing.timer)
+      this.#activeCrons.delete(sessionId)
+    }
+    const cron = typeof input?.cron === 'string' ? input.cron.trim() : undefined
+    if (cron === undefined) return
+    const prompt = typeof input?.prompt === 'string' && input.prompt.trim().length > 0
+      ? input.prompt.trim()
+      : '/loop'
+    const recurring = input?.recurring !== false
+    const delayMs = parseCronDelayMs(cron)
+
+    const scheduleNext = () => {
+      const timer = setTimeout(() => {
+        if (!recurring) {
+          this.#activeCrons.delete(sessionId)
+        } else {
+          scheduleNext()
+        }
+        this.#dispatchWakeup(sessionId, prompt, `Claude Code cron (${cron})`)
+      }, delayMs)
+      timer.unref?.()
+      this.#activeCrons.set(sessionId, { timer, cron, prompt, recurring })
+    }
+
+    scheduleNext()
+    this.#logger?.warn(`dsh-claude: scheduled cron in ${Math.round(delayMs / 1000)}s (${cron}) for ${sessionId}`)
+  }
+
+  #handleCronDelete(entry: SupervisorEntry): void {
+    const sessionId = entry.sessionId
+    const existing = this.#activeCrons.get(sessionId)
+    if (existing !== undefined) {
+      clearTimeout(existing.timer)
+      this.#activeCrons.delete(sessionId)
+      this.#logger?.warn(`dsh-claude: deleted cron for ${sessionId}`)
+    }
   }
 
   #dispatchWakeup(sessionId: string, prompt: string, reason: string): void {
@@ -1220,6 +1304,8 @@ export class ClaudeSupervisor {
     this.#entries.clear()
     for (const wakeup of this.#activeWakeups.values()) clearTimeout(wakeup.timer)
     this.#activeWakeups.clear()
+    for (const cron of this.#activeCrons.values()) clearTimeout(cron.timer)
+    this.#activeCrons.clear()
     this.#notifyCapacityChange()
     await Promise.allSettled([
       ...pendingAdmissions,
@@ -1582,6 +1668,12 @@ export class ClaudeSupervisor {
         // The lead's own list, or the task board every member shares.
         if (message.toolName === 'ScheduleWakeup' && message.parentToolUseId === undefined) {
           this.#handleScheduleWakeup(entry, message.input)
+        }
+        if (message.toolName === 'CronCreate' && message.parentToolUseId === undefined) {
+          this.#handleCronCreate(entry, message.input)
+        }
+        if (message.toolName === 'CronDelete' && message.parentToolUseId === undefined) {
+          this.#handleCronDelete(entry)
         }
         if (message.toolName === 'TodoWrite' && message.parentToolUseId === undefined) {
           const todos = todosFromTodoWrite(message.input)
@@ -2368,6 +2460,17 @@ export class ClaudeSupervisor {
    *  turn's failure text, so a kill the plugin asked for names its cause. */
   async #disposeEntry(entry: SupervisorEntry, reason: string): Promise<void> {
     if (entry.state === 'disposed') return
+
+    const cron = this.#activeCrons.get(entry.sessionId)
+    if (cron !== undefined) {
+      clearTimeout(cron.timer)
+      this.#activeCrons.delete(entry.sessionId)
+    }
+    const wakeup = this.#activeWakeups.get(entry.sessionId)
+    if (wakeup !== undefined) {
+      clearTimeout(wakeup.timer)
+      this.#activeWakeups.delete(entry.sessionId)
+    }
 
     entry.disposeReason = reason
     if (entry.idleTimer !== undefined) clearTimeout(entry.idleTimer)
