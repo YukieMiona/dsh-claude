@@ -283,6 +283,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     approval: ctx.approval,
     userQuestions: ctx.userQuestions,
     config: supervisorConfig,
+    resolveAgent: sessionId => ctx.agents.get(sessionId as never),
     runDetached: operation => ctx.agents.withoutInitiator(operation),
     sidecar,
     defaultPermissionMode: () => readDefaultPermissionMode(),

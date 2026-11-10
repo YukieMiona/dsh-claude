@@ -468,6 +468,8 @@ declare class ClaudeSupervisor {
     };
     /** Mirror of detached tasks into the Host's background-job list. */
     hostJobs?: ClaudeHostJobs;
+    /** Resolve an agent across sessions, decoupled from single-process lifecycles. */
+    resolveAgent?: (sessionId: string) => Agent | undefined;
   });
   snapshots(): ClaudeSupervisorSnapshot[];
   supportedCommands(agent: Agent, model?: string): Promise<readonly SlashCommand[]>;

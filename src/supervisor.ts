@@ -520,6 +520,7 @@ export class ClaudeSupervisor {
    *  is what makes it findable afterwards. */
   readonly #logger: { warn(message: string): void } | undefined
   readonly #hostJobs: ClaudeHostJobs | undefined
+  readonly #resolveAgent: (sessionId: string) => Agent | undefined
   readonly #contextWindows = new Map<string, number>()
   #disposed = false
   #admissionGate: Promise<void> = Promise.resolve()
@@ -552,6 +553,8 @@ export class ClaudeSupervisor {
     logger?: { warn(message: string): void }
     /** Mirror of detached tasks into the Host's background-job list. */
     hostJobs?: ClaudeHostJobs
+    /** Resolve an agent across sessions, decoupled from single-process lifecycles. */
+    resolveAgent?: (sessionId: string) => Agent | undefined
   }) {
     this.#runtime = dependencies.runtime
     this.#approval = dependencies.approval
@@ -564,6 +567,7 @@ export class ClaudeSupervisor {
     this.#permissionSelector = dependencies.permissionSelector ?? (async () => 'plugin')
     this.#logger = dependencies.logger
     this.#hostJobs = dependencies.hostJobs
+    this.#resolveAgent = dependencies.resolveAgent ?? (() => undefined)
   }
 
   snapshots(): ClaudeSupervisorSnapshot[] {
@@ -732,7 +736,7 @@ export class ClaudeSupervisor {
   #dispatchWakeup(sessionId: string, prompt: string, reason: string): void {
     try {
       const entry = this.#entries.get(sessionId)
-      const agent = entry?.ownerAgent
+      const agent = this.#resolveAgent(sessionId) ?? entry?.ownerAgent
       if (agent === undefined) {
         this.#logger?.warn(`dsh-claude: cannot dispatch wakeup for ${sessionId}, owner agent unavailable`)
         return
@@ -2460,17 +2464,6 @@ export class ClaudeSupervisor {
    *  turn's failure text, so a kill the plugin asked for names its cause. */
   async #disposeEntry(entry: SupervisorEntry, reason: string): Promise<void> {
     if (entry.state === 'disposed') return
-
-    const cron = this.#activeCrons.get(entry.sessionId)
-    if (cron !== undefined) {
-      clearTimeout(cron.timer)
-      this.#activeCrons.delete(entry.sessionId)
-    }
-    const wakeup = this.#activeWakeups.get(entry.sessionId)
-    if (wakeup !== undefined) {
-      clearTimeout(wakeup.timer)
-      this.#activeWakeups.delete(entry.sessionId)
-    }
 
     entry.disposeReason = reason
     if (entry.idleTimer !== undefined) clearTimeout(entry.idleTimer)
