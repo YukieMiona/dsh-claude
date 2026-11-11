@@ -1667,7 +1667,7 @@ export class ClaudeSupervisor {
           toolName: message.toolName,
           title: message.toolName,
           summary: message.parentToolUseId === undefined ? rootCallSummary(message.toolName, message.input) : `Subagent called ${message.toolName}`,
-          detail: message.input,
+          detail: message.parentToolUseId === undefined ? message.input : undefined,
         })
         // The lead's own list, or the task board every member shares.
         if (message.toolName === 'ScheduleWakeup' && message.parentToolUseId === undefined) {
@@ -1702,7 +1702,7 @@ export class ClaudeSupervisor {
           toolUseId: message.toolUseId,
           ...(message.parentToolUseId === undefined ? {} : { parentToolUseId: message.parentToolUseId }),
           title: message.isError ? 'Tool failed' : 'Tool completed',
-          detail: message.output,
+          detail: message.parentToolUseId === undefined ? message.output : undefined,
           isError: message.isError,
         })
         return
@@ -2093,7 +2093,9 @@ export class ClaudeSupervisor {
       }
       await this.#upsertTranscriptText(active)
       await this.#flushTranscript(active)
-      const message = result.errors?.join('\n')
+      const collected = result.errors?.filter(entry => entry.trim().length > 0).join('\n')
+      const message = (collected !== undefined && collected.length > 0 ? collected : undefined)
+        ?? result.failureDetail
         ?? (result.terminalReason !== undefined ? `Claude Code failed the turn (${result.terminalReason})` : 'Claude Code failed the turn')
       await this.#appendSafely(active, {
         kind: 'error',

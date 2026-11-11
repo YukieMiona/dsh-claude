@@ -75,7 +75,7 @@ export type NormalizedSdkMessage =
     subtype: string
   }
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
-  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
+  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; failureDetail?: string; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
   | { kind: 'protocol-error'; title: string; detail: unknown }
   /** Claude Code's guess at the user's next prompt; arrives after `result`. */
   | { kind: 'prompt-suggestion'; text: string }
@@ -462,6 +462,9 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       ? value.errors.filter((item): item is string => typeof item === 'string')
       : undefined
     const terminalReason = string(value.terminal_reason)
+    const failureDetail = !success && typeof value.result === 'string' && value.result.trim().length > 0
+      ? value.result
+      : undefined
     const userMessageUuid = string(value.user_message_uuid)
     // User sends the CLI had not reached when it produced this result: non-zero
     // means at least one more turn follows without further input, so this result
@@ -484,6 +487,7 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       success,
       ...(success && typeof value.result === 'string' ? { text: value.result } : {}),
       ...(errors === undefined ? {} : { errors }),
+      ...(failureDetail === undefined ? {} : { failureDetail }),
       ...(terminalReason === undefined ? {} : { terminalReason }),
       ...(permissionDenials === undefined || permissionDenials.length === 0 ? {} : { permissionDenials }),
       usage: resultUsage(value),

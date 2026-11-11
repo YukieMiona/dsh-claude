@@ -237,13 +237,14 @@ describe('Claude SDK message normalization', () => {
       is_error: true,
       terminal_reason: 'api_error',
       session_id: 'session-1',
-      result: 'ignored',
+      result: 'API Error: 500 Internal Server Error',
       total_cost_usd: 0,
       usage: { input_tokens: 1, output_tokens: 1 },
     }))).toEqual([{
       kind: 'result',
       success: false,
       terminalReason: 'api_error',
+      failureDetail: 'API Error: 500 Internal Server Error',
       usage: { inputTokens: 1, outputTokens: 1, cumulativeCostUsd: 0 },
       sessionId: 'session-1',
     }])

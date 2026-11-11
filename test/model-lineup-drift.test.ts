@@ -40,3 +40,28 @@ describe('Claude model lineup drift', () => {
     },
   )
 })
+
+describe('aliasing a lineup id this plugin did not derive', () => {
+  afterEach(() => { resetClaudeModels() })
+
+  const row = (value: string): ModelInfo => ({
+    value,
+    displayName: value,
+    description: '',
+  }) as ModelInfo
+
+  it('advertises every gateway model by the id the CLI gave it', () => {
+    const gateway = ['codex/gpt-6.1-terra', 'codex/gpt-6.1-sol', 'codex/gpt-6-astra', 'workbuddy/kimi-k3.1-pro', 'auto/deepseek-v4.1-flash']
+    const ids = catalogOf(gateway.map(row))
+    for (const id of gateway) expect(ids).toContain(id)
+    expect(ids).not.toContain('codex/gpt')
+    expect(ids).not.toContain('workbuddy/kimi')
+    expect(ids).not.toContain('auto/deepseek')
+  })
+
+  it('supports case-insensitive [1M] wide route', () => {
+    const ids = catalogOf([row('claude-3-7-sonnet[1M]'), row('claude-fable-5-2[1m]')])
+    expect(ids).toContain('sonnet[1m]')
+    expect(ids).toContain('fable[1m]')
+  })
+})

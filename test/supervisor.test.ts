@@ -3031,4 +3031,39 @@ describe('Claude native renderer mirroring', () => {
     })
     await runtime.dispose()
   })
+
+  it('keeps subagent tool payloads out of the parent projection detail', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'run subagent' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({
+      type: 'assistant',
+      parent_tool_use_id: 'parent-call',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'nested-1', name: 'Read', input: { path: '/a'.repeat(500) } }],
+      },
+    } as SDKMessage)
+    query.push({
+      type: 'user',
+      parent_tool_use_id: 'parent-call',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'nested-1', content: 'r'.repeat(10_000) }],
+      },
+    } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const nested = (await projection(runtime)).activities.filter(activity => activity.parentToolUseId === 'parent-call')
+    expect(nested).toHaveLength(2)
+    expect(nested.map(activity => activity.kind)).toEqual(['subagent', 'subagent'])
+    expect(nested[0]).toMatchObject({ toolUseId: 'nested-1', toolName: 'Read', phase: 'started' })
+    expect(nested[1]).toMatchObject({ toolUseId: 'nested-1', phase: 'completed' })
+    expect(nested[0]!.detail).toBeUndefined()
+    expect(nested[1]!.detail).toBeUndefined()
+    await runtime.dispose()
+  })
 })
