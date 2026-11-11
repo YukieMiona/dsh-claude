@@ -40,8 +40,8 @@ export interface ClaudeModelRow {
   readonly supportsAutoMode?: boolean
 }
 
-/** A 1M-context route spells it in the id (`opus[1m]`, `claude-fable-5-1[1m]`). */
-const WIDE_ROUTE = /\[1m\]$/u
+/** A 1M-context route spells it in the id (`opus[1m]`, `claude-fable-5-1[1m]`, `claude-3-7-sonnet[1M]`). */
+const WIDE_ROUTE = /\[1[mM]\]$/u
 
 /** What the selector shows before the lineup is known -- the probe below failed
  *  or has not answered yet. `default` is the only id that is valid on every
@@ -84,8 +84,10 @@ function declaredContextWindow(row: ModelInfo): number | undefined {
  */
 export function claudeModelAlias(value: string): string {
   const wide = WIDE_ROUTE.test(value)
-  const bare = value.replace(WIDE_ROUTE, '').replace(/^claude-/u, '')
-  const family = bare.split('-').find(segment => !/^\d+$/u.test(segment)) ?? bare
+  const bare = value.replace(WIDE_ROUTE, '')
+  if (!bare.startsWith('claude-')) return wide ? `${bare}[1m]` : bare
+  const stripped = bare.replace(/^claude-/u, '')
+  const family = stripped.split('-').find(segment => !/^\d+$/u.test(segment)) ?? stripped
   return wide ? `${family}[1m]` : family
 }
 

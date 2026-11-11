@@ -2093,6 +2093,45 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('absorbs an earlier queued turn result as a progress segment without rejecting the turn', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
+    const activeUuid = (runtime.snapshots()[0] as any)?.active?.promptUuid
+    transport.queries[0]!.push(init())
+    // Earlier queued result arrives while the active turn is still queued:
+    transport.queries[0]!.push({
+      type: 'result',
+      subtype: 'success',
+      session_id: 'claude-session-1',
+      user_message_uuid: 'earlier-queued-user-message',
+      result: 'earlier segment output',
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      queued_turn_count: 1,
+    } as SDKMessage)
+    // The active turn result arrives next:
+    transport.queries[0]!.push(delta('final output'))
+    transport.queries[0]!.push({
+      type: 'result',
+      subtype: 'success',
+      session_id: 'claude-session-1',
+      user_message_uuid: activeUuid,
+      result: 'final output',
+      total_cost_usd: 0,
+      usage: { input_tokens: 1, output_tokens: 1 },
+      queued_turn_count: 0,
+    } as SDKMessage)
+    const collected = await collect(output)
+    expect(collected).toEqual(expect.arrayContaining([
+      { type: 'text-delta', text: 'final output' },
+      { type: 'complete', text: 'final output' },
+    ]))
+    expect(runtime.snapshots()[0]).toMatchObject({ state: 'idle' })
+    await runtime.dispose()
+  })
+
   it('tears down the submitted turn when DSH aborts', async () => {
     const transport = factory()
     const owner = fakeAgent()
@@ -2990,6 +3029,41 @@ describe('Claude native renderer mirroring', () => {
         expect.objectContaining({ kind: 'thinking', summary: 'Weighing the options.' }),
       ]),
     })
+    await runtime.dispose()
+  })
+
+  it('keeps subagent tool payloads out of the parent projection detail', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'run subagent' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({
+      type: 'assistant',
+      parent_tool_use_id: 'parent-call',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'nested-1', name: 'Read', input: { path: '/a'.repeat(500) } }],
+      },
+    } as SDKMessage)
+    query.push({
+      type: 'user',
+      parent_tool_use_id: 'parent-call',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'nested-1', content: 'r'.repeat(10_000) }],
+      },
+    } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+    const nested = (await projection(runtime)).activities.filter(activity => activity.parentToolUseId === 'parent-call')
+    expect(nested).toHaveLength(2)
+    expect(nested.map(activity => activity.kind)).toEqual(['subagent', 'subagent'])
+    expect(nested[0]).toMatchObject({ toolUseId: 'nested-1', toolName: 'Read', phase: 'started' })
+    expect(nested[1]).toMatchObject({ toolUseId: 'nested-1', phase: 'completed' })
+    expect(nested[0]!.detail).toBeUndefined()
+    expect(nested[1]!.detail).toBeUndefined()
     await runtime.dispose()
   })
 })

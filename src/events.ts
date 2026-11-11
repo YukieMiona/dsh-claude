@@ -104,6 +104,11 @@ const MAX_SUMMARY_CHARS = 1_000
  *  wide enough to hold a thought. */
 const MAX_THINKING_CHARS = 4_000
 const MAX_DETAIL_CHARS = 4_000
+/** The bound for a row nothing draws.
+ *  A subagent's own tool calls and results are mirrored into the parent
+ *  projection only to keep the agent-group card's step count honest; the card
+ *  draws the call's name and the result's status, never the payload. */
+const MAX_TELEMETRY_DETAIL_CHARS = 512
 const MAX_TRANSCRIPT_TEXT_CHARS = 64_000
 const MAX_DEPTH = 6
 const MAX_ARRAY_ITEMS = 40
@@ -174,11 +179,11 @@ export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object
   }
 }
 
-export function safeDetail(value: unknown): string | undefined {
+export function safeDetail(value: unknown, maxChars = MAX_DETAIL_CHARS): string | undefined {
   if (value === undefined) return undefined
   const redacted = redactValue(value)
-  if (typeof redacted === 'string') return boundText(redacted, MAX_DETAIL_CHARS)
-  return boundJson(redacted, MAX_DETAIL_CHARS)
+  if (typeof redacted === 'string') return boundText(redacted, maxChars)
+  return boundJson(redacted, maxChars)
 }
 
 /**
@@ -209,6 +214,13 @@ function boundJson(value: unknown, maxChars: number): string {
   return text
 }
 
+function detailBudgetFor(activity: {
+  kind: string
+  parentToolUseId?: string
+}): number {
+  return activity.parentToolUseId !== undefined ? MAX_TELEMETRY_DETAIL_CHARS : MAX_DETAIL_CHARS
+}
+
 export function normalizeActivity(
   activity: Omit<ClaudeActivityEvent, 'summary' | 'detail'> & {
     summary?: unknown
@@ -234,7 +246,7 @@ export function normalizeActivity(
       activity.kind === 'thinking' || activity.kind === 'steering' ? MAX_THINKING_CHARS : MAX_SUMMARY_CHARS,
     )
   }
-  const detail = safeDetail(activity.detail)
+  const detail = safeDetail(activity.detail, detailBudgetFor(activity))
   if (detail !== undefined) normalized.detail = detail
   if (activity.text !== undefined) normalized.text = redactText(activity.text, MAX_TRANSCRIPT_TEXT_CHARS)
   if (activity.isError !== undefined) normalized.isError = activity.isError

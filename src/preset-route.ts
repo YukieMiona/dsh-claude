@@ -18,13 +18,14 @@ export interface Config {
 export function apply(ctx: Context, config: Config = {}): void {
   ctx.on('agent/request', async (_payload, next) => {
     const upstream = await next()
-    // The returned model is what the Host writes into this request's header,
-    // and that header is the session's persisted selection from then on: write
-    // the selector's own id for it, never a spelling no catalog row carries.
+    const rawModel = config.model ?? upstream.model ?? 'default'
+    // If upstream already carries this exact model, preserve it without
+    // alias normalization so DSH step preparation does not throw a mismatch.
+    const model = upstream.model === rawModel ? rawModel : canonicalClaudeModelId(rawModel)
     return {
       ...upstream,
       provider: CLAUDE_CODE_PROVIDER,
-      model: canonicalClaudeModelId(config.model ?? upstream.model ?? 'default'),
+      model,
     }
   })
   // Expose the effective Host command names for collision-safe projection.

@@ -78,7 +78,7 @@ describe('Claude preset route', () => {
     expect(attached).toEqual(['dsh-claude'])
   })
 
-  it('records the selector id for a model the lineup maps, and leaves an unmapped one alone', async () => {
+  it('preserves the fixed step preparation model without mutating it', async () => {
     recordClaudeModels([
       { value: 'opus[1m]', displayName: 'Opus (1M context)', description: '' },
       { value: 'claude-fable-5-1[1m]', displayName: 'Fable', description: '' },
@@ -86,8 +86,8 @@ describe('Claude preset route', () => {
     const captured = capture()
     apply(captured.ctx)
     const route = (model: string) => captured.listener()({} as never, async () => ({ provider: 'claude', model }))
-    await expect(route('claude-fable-5-1[1m]')).resolves.toMatchObject({ model: 'fable[1m]' })
-    await expect(route('claude-fable-5-2[1m]')).resolves.toMatchObject({ model: 'fable[1m]' })
+    await expect(route('claude-fable-5-1[1m]')).resolves.toMatchObject({ model: 'claude-fable-5-1[1m]' })
+    await expect(route('claude-fable-5-2')).resolves.toMatchObject({ model: 'claude-fable-5-2' })
     await expect(route('opus[1m]')).resolves.toMatchObject({ model: 'opus[1m]' })
     await expect(route('something-else')).resolves.toMatchObject({ model: 'something-else' })
     resetClaudeModels()

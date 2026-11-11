@@ -460,10 +460,51 @@ function pluginDrawnUnderNative(activity: ClaudeActivityInput): boolean {
     || (activity.kind === 'subagent' && activity.parentToolUseId !== undefined)
 }
 
+function parseCronDelayMs(cron: string): number {
+  if (typeof cron !== 'string') return 600_000
+  const parts = cron.trim().split(/\s+/)
+  if (parts.length >= 5) {
+    const min = parts[0] ?? ''
+    const hour = parts[1] ?? ''
+    const dom = parts[2] ?? ''
+    const stepMin = min.match(/^\*\/(\d+)$/)
+    if (stepMin && stepMin[1] !== undefined) {
+      const n = parseInt(stepMin[1], 10)
+      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 60_000, 10_000), 86_400_000)
+    }
+    const stepHour = hour.match(/^\*\/(\d+)$/)
+    if (stepHour && stepHour[1] !== undefined && (min === '0' || min === '*')) {
+      const n = parseInt(stepHour[1], 10)
+      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 3_600_000, 10_000), 86_400_000)
+    }
+    const stepDay = dom.match(/^\*\/(\d+)$/)
+    if (stepDay && stepDay[1] !== undefined && min === '0' && hour === '0') {
+      const n = parseInt(stepDay[1], 10)
+      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 86_400_000, 10_000), 86_400_000)
+    }
+    const now = new Date()
+    const targetMinMatch = min.match(/^(\d+)$/)
+    const targetHourMatch = hour.match(/^(\d+)$/)
+    const targetMin = targetMinMatch && targetMinMatch[1] !== undefined ? parseInt(targetMinMatch[1], 10) : undefined
+    const targetHour = targetHourMatch && targetHourMatch[1] !== undefined ? parseInt(targetHourMatch[1], 10) : undefined
+    if (targetMin !== undefined && targetHour !== undefined) {
+      const next = new Date(now)
+      next.setSeconds(0, 0)
+      next.setHours(targetHour, targetMin)
+      if (next.getTime() <= now.getTime()) {
+        next.setDate(next.getDate() + 1)
+      }
+      return Math.max(next.getTime() - now.getTime(), 10_000)
+    }
+  }
+  return 600_000
+}
+
 export class ClaudeSupervisor {
   readonly #entries = new Map<string, SupervisorEntry>()
   readonly #interruptions = new Map<string, Promise<void>>()
   readonly #activeWakeups = new Map<string, { timer: ReturnType<typeof setTimeout>; targetTime: number; prompt: string; reason: string }>()
+  readonly #activeCrons = new Map<string, { timer: ReturnType<typeof setTimeout>; cron: string; prompt: string; recurring: boolean }>()
   readonly #runtime: Pick<SubprocessRuntime, 'spawn' | 'resolveExecutable'>
   readonly #approval: Pick<ApprovalService, 'request'>
   readonly #userQuestions: Pick<UserQuestionService, 'ask'>
@@ -479,6 +520,7 @@ export class ClaudeSupervisor {
    *  is what makes it findable afterwards. */
   readonly #logger: { warn(message: string): void } | undefined
   readonly #hostJobs: ClaudeHostJobs | undefined
+  readonly #resolveAgent: (sessionId: string) => Agent | undefined
   readonly #contextWindows = new Map<string, number>()
   #disposed = false
   #admissionGate: Promise<void> = Promise.resolve()
@@ -511,6 +553,8 @@ export class ClaudeSupervisor {
     logger?: { warn(message: string): void }
     /** Mirror of detached tasks into the Host's background-job list. */
     hostJobs?: ClaudeHostJobs
+    /** Resolve an agent across sessions, decoupled from single-process lifecycles. */
+    resolveAgent?: (sessionId: string) => Agent | undefined
   }) {
     this.#runtime = dependencies.runtime
     this.#approval = dependencies.approval
@@ -523,6 +567,7 @@ export class ClaudeSupervisor {
     this.#permissionSelector = dependencies.permissionSelector ?? (async () => 'plugin')
     this.#logger = dependencies.logger
     this.#hostJobs = dependencies.hostJobs
+    this.#resolveAgent = dependencies.resolveAgent ?? (() => undefined)
   }
 
   snapshots(): ClaudeSupervisorSnapshot[] {
@@ -645,16 +690,59 @@ export class ClaudeSupervisor {
     this.#logger?.warn(`dsh-claude: scheduled wakeup in ${delaySeconds}s for ${sessionId}: ${reason}`)
   }
 
+  #handleCronCreate(entry: SupervisorEntry, rawInput: unknown): void {
+    const input = rawInput as { cron?: string; prompt?: string; recurring?: boolean } | undefined
+    const sessionId = entry.sessionId
+    const existing = this.#activeCrons.get(sessionId)
+    if (existing !== undefined) {
+      clearTimeout(existing.timer)
+      this.#activeCrons.delete(sessionId)
+    }
+    const cron = typeof input?.cron === 'string' ? input.cron.trim() : undefined
+    if (cron === undefined) return
+    const prompt = typeof input?.prompt === 'string' && input.prompt.trim().length > 0
+      ? input.prompt.trim()
+      : '/loop'
+    const recurring = input?.recurring !== false
+    const delayMs = parseCronDelayMs(cron)
+
+    const scheduleNext = () => {
+      const timer = setTimeout(() => {
+        if (!recurring) {
+          this.#activeCrons.delete(sessionId)
+        } else {
+          scheduleNext()
+        }
+        this.#dispatchWakeup(sessionId, prompt, `Claude Code cron (${cron})`)
+      }, delayMs)
+      timer.unref?.()
+      this.#activeCrons.set(sessionId, { timer, cron, prompt, recurring })
+    }
+
+    scheduleNext()
+    this.#logger?.warn(`dsh-claude: scheduled cron in ${Math.round(delayMs / 1000)}s (${cron}) for ${sessionId}`)
+  }
+
+  #handleCronDelete(entry: SupervisorEntry): void {
+    const sessionId = entry.sessionId
+    const existing = this.#activeCrons.get(sessionId)
+    if (existing !== undefined) {
+      clearTimeout(existing.timer)
+      this.#activeCrons.delete(sessionId)
+      this.#logger?.warn(`dsh-claude: deleted cron for ${sessionId}`)
+    }
+  }
+
   #dispatchWakeup(sessionId: string, prompt: string, reason: string): void {
     try {
       const entry = this.#entries.get(sessionId)
-      const agent = entry?.ownerAgent
+      const agent = this.#resolveAgent(sessionId) ?? entry?.ownerAgent
       if (agent === undefined) {
         this.#logger?.warn(`dsh-claude: cannot dispatch wakeup for ${sessionId}, owner agent unavailable`)
         return
       }
       const message = {
-        id: randomUUID(),
+        id: randomUUID() as any,
         role: 'user' as const,
         source: { kind: 'user' as const },
         content: [{ type: 'text' as const, text: prompt }],
@@ -1220,6 +1308,8 @@ export class ClaudeSupervisor {
     this.#entries.clear()
     for (const wakeup of this.#activeWakeups.values()) clearTimeout(wakeup.timer)
     this.#activeWakeups.clear()
+    for (const cron of this.#activeCrons.values()) clearTimeout(cron.timer)
+    this.#activeCrons.clear()
     this.#notifyCapacityChange()
     await Promise.allSettled([
       ...pendingAdmissions,
@@ -1487,7 +1577,17 @@ export class ClaudeSupervisor {
           await this.#completeTurn(entry, active, message)
           return
         }
-        // Primary-turn mismatches remain protocol failures.
+        // If the CLI still has turns queued, this foreign result belongs to an
+        // earlier queued turn (e.g. previous turn folded or completed late).
+        // Absorb it as a progress segment and wait for the active prompt's result.
+        if ((message.queuedTurnCount ?? 0) > 0) {
+          this.#logger?.warn?.(
+            `dsh-claude: absorbed foreign result for user message ${message.userMessageUuid} while active prompt ${active.promptUuid} is queued (${message.queuedTurnCount} turns remaining)`,
+          )
+          await this.#completeProgressSegment(active, message)
+          return
+        }
+        // Primary-turn mismatches with no queued turns remain protocol failures.
         throw new ClaudeProtocolError(`Claude Code result for user message ${message.userMessageUuid} does not match active request ${active.promptUuid}`)
       }
       // A steered send the CLI had not reached when it produced this result is
@@ -1567,11 +1667,17 @@ export class ClaudeSupervisor {
           toolName: message.toolName,
           title: message.toolName,
           summary: message.parentToolUseId === undefined ? rootCallSummary(message.toolName, message.input) : `Subagent called ${message.toolName}`,
-          detail: message.input,
+          detail: message.parentToolUseId === undefined ? message.input : undefined,
         })
         // The lead's own list, or the task board every member shares.
         if (message.toolName === 'ScheduleWakeup' && message.parentToolUseId === undefined) {
           this.#handleScheduleWakeup(entry, message.input)
+        }
+        if (message.toolName === 'CronCreate' && message.parentToolUseId === undefined) {
+          this.#handleCronCreate(entry, message.input)
+        }
+        if (message.toolName === 'CronDelete' && message.parentToolUseId === undefined) {
+          this.#handleCronDelete(entry)
         }
         if (message.toolName === 'TodoWrite' && message.parentToolUseId === undefined) {
           const todos = todosFromTodoWrite(message.input)
@@ -1596,7 +1702,7 @@ export class ClaudeSupervisor {
           toolUseId: message.toolUseId,
           ...(message.parentToolUseId === undefined ? {} : { parentToolUseId: message.parentToolUseId }),
           title: message.isError ? 'Tool failed' : 'Tool completed',
-          detail: message.output,
+          detail: message.parentToolUseId === undefined ? message.output : undefined,
           isError: message.isError,
         })
         return
@@ -1987,7 +2093,9 @@ export class ClaudeSupervisor {
       }
       await this.#upsertTranscriptText(active)
       await this.#flushTranscript(active)
-      const message = result.errors?.join('\n')
+      const collected = result.errors?.filter(entry => entry.trim().length > 0).join('\n')
+      const message = (collected !== undefined && collected.length > 0 ? collected : undefined)
+        ?? result.failureDetail
         ?? (result.terminalReason !== undefined ? `Claude Code failed the turn (${result.terminalReason})` : 'Claude Code failed the turn')
       await this.#appendSafely(active, {
         kind: 'error',
