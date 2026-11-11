@@ -32,7 +32,7 @@ import { ClaudeSidecarRepository } from './sidecar.ts'
 import { claudePermissionMode, type ClaudePermissionMode, type ClaudePermissionSelector } from './permission-mode.ts'
 import { normalizeSdkMessage, type NormalizedSdkMessage } from './sdk-messages.ts'
 import { claudeModelRow, claudeModelValue, recordClaudeModels } from './model-catalog.ts'
-import { readPlanUsageFrom } from './plan-usage.ts'
+import { findRateLimitResetDelayMs, latestPlanUsage, readPlanUsageFrom } from './plan-usage.ts'
 import { createManagedClaudeSpawner, type ManagedClaudeProcess } from './spawn.ts'
 import { captureWorktreeTree } from './worktree-snapshot.ts'
 import { hostJobKind, hostJobProgress, type ClaudeHostJobs } from './host-jobs.ts'
@@ -731,6 +731,44 @@ export class ClaudeSupervisor {
       this.#activeCrons.delete(sessionId)
       this.#logger?.warn(`dsh-claude: deleted cron for ${sessionId}`)
     }
+  }
+
+  #handleRateLimitBackoff(sessionId: string, candidateText: string | undefined): void {
+    const existing = this.#activeCrons.get(sessionId)
+    if (existing === undefined) return
+    const delayMs = findRateLimitResetDelayMs(latestPlanUsage(), candidateText)
+    if (delayMs === undefined) return
+
+    clearTimeout(existing.timer)
+    const minutes = Math.round(delayMs / 60_000)
+    this.#logger?.warn(
+      `dsh-claude: rate limit detected for ${sessionId}; deferring loop wakeup by ${minutes}m until quota resets`,
+    )
+
+    const scheduleNext = () => {
+      const normalDelayMs = parseCronDelayMs(existing.cron)
+      const timer = setTimeout(() => {
+        if (!existing.recurring) {
+          this.#activeCrons.delete(sessionId)
+        } else {
+          scheduleNext()
+        }
+        this.#dispatchWakeup(sessionId, existing.prompt, `Claude Code cron (${existing.cron})`)
+      }, normalDelayMs)
+      timer.unref?.()
+      this.#activeCrons.set(sessionId, { ...existing, timer })
+    }
+
+    const backoffTimer = setTimeout(() => {
+      if (!existing.recurring) {
+        this.#activeCrons.delete(sessionId)
+      } else {
+        scheduleNext()
+      }
+      this.#dispatchWakeup(sessionId, existing.prompt, `Claude Code cron after rate-limit backoff (${existing.cron})`)
+    }, delayMs)
+    backoffTimer.unref?.()
+    this.#activeCrons.set(sessionId, { ...existing, timer: backoffTimer })
   }
 
   #dispatchWakeup(sessionId: string, prompt: string, reason: string): void {
@@ -1772,6 +1810,9 @@ export class ClaudeSupervisor {
           ...('summary' in message ? { summary: message.summary } : {}),
           ...('detail' in message ? { detail: message.detail } : {}),
         })
+        if (message.title.toLowerCase().includes('rate limit')) {
+          this.#handleRateLimitBackoff(entry.sessionId, message.title)
+        }
         return
       case 'permission-denied':
         await this.#appendActivity(active, {
@@ -2134,6 +2175,14 @@ export class ClaudeSupervisor {
       active.output.push({ type: 'complete', text: active.text })
       active.output.close()
     }
+    const candidateText = [
+      active.text,
+      result.text,
+      result.failureDetail,
+      ...(result.errors ?? []),
+      result.terminalReason === 'rate_limit' ? 'Claude rate limit is blocking requests' : '',
+    ].filter(Boolean).join('\n')
+    this.#handleRateLimitBackoff(entry.sessionId, candidateText)
     if (active.signal !== undefined && active.abortListener !== undefined) {
       active.signal.removeEventListener('abort', active.abortListener)
     }

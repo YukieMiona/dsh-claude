@@ -165,3 +165,66 @@ export function latestPlanUsage(): PlanUsageReport | undefined {
 export function resetPlanUsage(): void {
   latest = undefined
 }
+
+/**
+ * Detect rate-limit conditions and compute the smart delay until quota resets.
+ *
+ * Checks latest plan usage windows first (e.g. 5-hour window at 100% capacity),
+ * then falls back to parsing common Claude rate limit messages.
+ */
+export function findRateLimitResetDelayMs(
+  planReport = latestPlanUsage(),
+  text?: string,
+  now = Date.now(),
+): number | undefined {
+  // 1. Check known usage windows for an exhausted limit (e.g. five_hour at 100%)
+  if (planReport?.windows !== undefined) {
+    for (const win of planReport.windows) {
+      if ((win.utilization ?? 0) >= 100 && typeof win.resetsAt === 'string') {
+        const resetAt = Date.parse(win.resetsAt)
+        if (Number.isFinite(resetAt) && resetAt > now) {
+          // Add a 30s safety buffer so the window has safely rolled over
+          return Math.max(resetAt - now + 30_000, 60_000)
+        }
+      }
+    }
+  }
+
+  if (text === undefined || text.length === 0) return undefined
+
+  // 2. Match common Claude rate limit patterns in text
+  const isRateLimit = /hit your (?:5-hour|\d+-hour) limit/iu.test(text)
+    || /rate limit.*(?:exceeded|blocking|reached)/iu.test(text)
+    || /too many requests/iu.test(text)
+
+  if (!isRateLimit) return undefined
+
+  // Try relative delay: "in X hour(s) [and Y minute(s)]"
+  const relHours = text.match(/in\s+(\d+)\s*(?:hours?|hrs?|h)\b/i)
+  const relMins = text.match(/in\s+(?:(\d+)\s*(?:hours?|hrs?|h)\s*(?:and\s*)?)?(\d+)\s*(?:minutes?|mins?|m)\b/i)
+  let parsedMs = 0
+  if (relHours && relHours[1]) parsedMs += parseInt(relHours[1], 10) * 3_600_000
+  if (relMins && relMins[2]) parsedMs += parseInt(relMins[2], 10) * 60_000
+  if (parsedMs > 0) return parsedMs + 30_000
+
+  // Try clock time: "reset at 4:20 PM" or "retry after 16:20"
+  const clockMatch = text.match(/(?:reset\s+at|retry\s+after)\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?/i)
+  if (clockMatch && clockMatch[1] && clockMatch[2]) {
+    let hours = parseInt(clockMatch[1], 10)
+    const minutes = parseInt(clockMatch[2], 10)
+    const ampm = clockMatch[4]?.toLowerCase()
+    if (ampm === 'pm' && hours < 12) hours += 12
+    if (ampm === 'am' && hours === 12) hours = 0
+    const target = new Date(now)
+    target.setSeconds(0, 0)
+    target.setHours(hours, minutes)
+    if (target.getTime() <= now) {
+      target.setDate(target.getDate() + 1)
+    }
+    const delay = target.getTime() - now + 30_000
+    if (delay > 0) return delay
+  }
+
+  // Fallback: 5-hour limit default backoff of 30 minutes if no specific time found
+  return 1_800_000
+}

@@ -130,4 +130,93 @@ describe('Claude Code Cron & Wakeup Lifecycle', () => {
 
     await supervisor.dispose()
   })
+
+  it('defers loop wakeup until rate limit resets when hitting 5-hour limit', async () => {
+    const agent = fakeAgent('session-test-backoff')
+    let currentQuery: FakeQuery | undefined
+
+    const supervisor = new ClaudeSupervisor({
+      runtime: { spawn: () => { throw new Error('fake query must not spawn') } },
+      approval: { request: async () => 'rejected' },
+      userQuestions: { ask: async () => ({ answers: [] }) },
+      config: {
+        executablePath: '/local/claude',
+        idleTimeoutMs: 60_000,
+        maxProcesses: 4,
+        defaultModel: 'default',
+        renderMode: 'plugin',
+      },
+      resolveAgent: id => (id === agent.id ? agent : undefined),
+      queryFactory: () => {
+        currentQuery = new FakeQuery()
+        return currentQuery as unknown as Query
+      },
+    })
+
+    const stream = await supervisor.runTurn({
+      agent,
+      model: 'default',
+      userPrompt: 'start loop',
+      signal: new AbortController().signal,
+    })
+
+    currentQuery!.push({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'claude-sess-limit',
+      claude_code_version: '2.1.318',
+      cwd: '/workspace',
+    } as SDKMessage)
+
+    // Setup 6-minute loop
+    currentQuery!.push({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{
+          type: 'tool_use',
+          id: 'toolu_cron',
+          name: 'CronCreate',
+          input: { cron: '*/6 * * * *', prompt: 'Continue', recurring: true },
+        }],
+      },
+    } as SDKMessage)
+
+    // Complete with 5-hour limit notice (2 hours remaining)
+    currentQuery!.push({
+      type: 'result',
+      subtype: 'success',
+      session_id: 'claude-sess-limit',
+      result: "You've hit your 5-hour limit for Claude. Your limit will reset in 2 hours.",
+      total_cost_usd: 0,
+      usage: { input_tokens: 10, output_tokens: 5 },
+    } as SDKMessage)
+
+    for await (const _ of stream) { /* drain */ }
+
+    // After 6 minutes, wakeup should NOT trigger because it is deferred
+    await vi.advanceTimersByTimeAsync(360_000)
+    expect(agent.followup).not.toHaveBeenCalled()
+
+    // After 30 minutes, still should not trigger
+    await vi.advanceTimersByTimeAsync(30 * 60_000)
+    expect(agent.followup).not.toHaveBeenCalled()
+
+    // Advance remaining time to 2 hours + 30s buffer (total 7_230_000 ms)
+    // Already advanced: 360_000 + 1_800_000 = 2_160_000 ms
+    // Remaining: 7_230_000 - 2_160_000 = 5_070_000 ms
+    await vi.advanceTimersByTimeAsync(5_070_000)
+
+    // Now wakeup triggers!
+    expect(agent.followup).toHaveBeenCalledTimes(1)
+    expect(agent.followups[0]).toMatchObject({
+      content: [{ type: 'text', text: 'Continue' }],
+    })
+
+    // Following wakeups resume normal 6-minute interval
+    await vi.advanceTimersByTimeAsync(360_000)
+    expect(agent.followup).toHaveBeenCalledTimes(2)
+
+    await supervisor.dispose()
+  })
 })
