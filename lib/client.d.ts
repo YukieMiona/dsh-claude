@@ -159,6 +159,14 @@ declare const en: {
   readonly repositoryDetached: "Detached HEAD";
   readonly repositoryUnknownBranch: "Unknown branch";
   readonly repositoryWorktree: "Worktree";
+  readonly loopBarLabel: "Loop";
+  readonly loopWakeup: "Scheduled wakeup";
+  readonly loopNextIn: "next in {time}";
+  readonly loopNextAbout: "next in about {time}";
+  readonly loopDue: "due now";
+  readonly loopMore: "+{count} more";
+  readonly loopRunNow: "Run now";
+  readonly loopStop: "Stop loop";
   readonly repositoryWorktreeLabel: "Git worktree";
   readonly repositoryChanges: "Changes";
   readonly repositoryModified: "Modified";

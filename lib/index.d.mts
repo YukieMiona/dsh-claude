@@ -338,6 +338,25 @@ declare class ClaudeSidecarRepository {
   importLegacy(sessionId: string, events: readonly SessionEvent[]): Promise<ClaudeSidecarProjection>;
 }
 //#endregion
+//#region src/loop-schedule.d.ts
+/** What the composer's loop indicator shows. */
+interface ClaudeLoopView {
+  /** A pending dynamic /loop wakeup. */
+  wakeup?: {
+    at: number;
+    reason?: string;
+    prompt?: string;
+  };
+  jobs: {
+    id: string;
+    prompt: string;
+    recurring: boolean;
+    schedule?: string;
+    human?: string;
+    nextAt?: number;
+  }[];
+}
+//#endregion
 //#region src/host-jobs.d.ts
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -488,6 +507,8 @@ declare class ClaudeSupervisor {
    *  and a restored message has already lost the insertion that would wake an
    *  idle driver. */
   canSteer(sessionId: string): boolean;
+  /** What this session has scheduled, for the composer's loop indicator. */
+  loopView(sessionId: string): ClaudeLoopView | undefined;
   /** Deliver one more user message into the turn a session is already running.
    *
    *  Claude Code reads a message pushed into its input stream at the next model
