@@ -67,6 +67,15 @@ declare const en: {
   readonly prosePlain: "Off";
   readonly proseEnhanced: "On";
   readonly proseEffect: "Gives headings, bold, italics, inline code, list markers, quotes and links their own colours, and paints the code block on a dark outlined surface. This overrides the Claude-desktop palette this package matches by default. Only applies under the plugin renderer, and takes effect immediately rather than on the next turn.";
+  readonly linkedRepositories: "Linked repositories display";
+  readonly linkedRepositoriesAuto: "Auto (collapse when multiple or mobile)";
+  readonly linkedRepositoriesCollapsed: "Always collapsed";
+  readonly linkedRepositoriesHidden: "Hidden";
+  readonly linkedRepositoriesExpanded: "Always expanded";
+  readonly linkedRepositoriesEffect: "Controls how linked repositories and PRs are displayed above the composer. Takes effect immediately.";
+  readonly linkedRepositoriesSummary: "{count} linked repositories / PRs";
+  readonly linkedRepositoriesExpand: "Expand";
+  readonly linkedRepositoriesCollapse: "Collapse";
   readonly worktreeBranchPrefix: "Worktree branch prefix";
   readonly worktreeBranchPrefixEffect: "Prefix changes apply to subsequently generated Worktree branches. Explicit full branch names remain unchanged.";
   readonly maxProcessesSetting: "Claude process limit";
