@@ -45,6 +45,7 @@ import {
   resumePrompt,
   scheduledTurnLabel,
   scheduledWakeup,
+  syncCrons,
   type LoopSchedule,
   type PendingWakeup,
 } from './loop-schedule.ts'
@@ -724,6 +725,16 @@ export class ClaudeSupervisor {
     }
     const id = deletedCronId(call.input)
     if (id !== undefined) loop.crons.delete(id)
+  }
+
+  /** Take Claude Code's own end-of-turn list of scheduled jobs as the truth.
+   *  It restores a session's jobs when a process resumes, so after a model
+   *  switch, an eviction or a Host restart this is the only way the plugin
+   *  learns the process it just started holds a schedule. */
+  #syncSchedule(entry: SupervisorEntry, reported: unknown): void {
+    if (this.#disposed || entry.state === 'disposed' || !Array.isArray(reported)) return
+    if (reported.length === 0 && !this.#loops.has(entry.sessionId)) return
+    syncCrons(this.#loop(entry.sessionId), reported)
   }
 
   /** Arm the safety net for a wakeup the CLI owes. It does nothing when the
@@ -1598,7 +1609,16 @@ export class ClaudeSupervisor {
       permissionMode,
       allowDangerouslySkipPermissions: true,
       canUseTool,
-      hooks: createAutoModeEscalation(),
+      hooks: {
+        ...createAutoModeEscalation(),
+        // Claude Code lists the session's scheduled jobs when a turn ends.
+        Stop: [{
+          hooks: [async input => {
+            if (input.hook_event_name === 'Stop') this.#syncSchedule(entry, input.session_crons)
+            return {}
+          }],
+        }],
+      },
       abortController: lifetime,
       spawnClaudeCodeProcess: createManagedClaudeSpawner(this.#runtime, this.#config.executablePath, process => {
         entry.process = process
@@ -2672,7 +2692,7 @@ export class ClaudeSupervisor {
       for (const [id, cron] of loop.crons) {
         if (cron.durable) continue
         loop.crons.delete(id)
-        this.#logger?.warn(`dsh-claude: scheduled task ${id} in ${entry.sessionId} ended with its Claude Code process (${reason})`)
+        this.#logger?.warn(`dsh-claude: scheduled task ${id} in ${entry.sessionId} is paused: its Claude Code process ended (${reason}); Claude Code restores it when the session next runs`)
       }
     }
     if (entry.idleTimer !== undefined) clearTimeout(entry.idleTimer)

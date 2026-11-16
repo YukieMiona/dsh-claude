@@ -112,6 +112,35 @@ export function deletedCronId(input: unknown): string | undefined {
   return text(record(input)?.id)
 }
 
+/**
+ * Replace the tracked crons with the list Claude Code reports at the end of a
+ * turn (the Stop hook's `session_crons`). That list is authoritative: it also
+ * names jobs this plugin never saw created, which is every job after a process
+ * is replaced, since Claude Code restores a session's jobs on resume while the
+ * plugin's own record was dropped with the old process.
+ *
+ * A dynamic /loop wakeup appears there too, as a one-shot. The tracked wakeup
+ * already covers it, so the one-shot carrying its prompt is left out.
+ */
+export function syncCrons(schedule: LoopSchedule, reported: unknown, now = Date.now()): void {
+  if (!Array.isArray(reported)) return
+  const next: LoopSchedule['crons'] = new Map()
+  let wakeupPrompt = schedule.wakeup?.synthetic === true ? undefined : schedule.wakeup?.prompt
+  for (const item of reported) {
+    const id = text(record(item)?.id)
+    const prompt = text(record(item)?.prompt)
+    if (id === undefined || prompt === undefined) continue
+    const recurring = record(item)?.recurring !== false
+    if (!recurring && prompt === wakeupPrompt) {
+      wakeupPrompt = undefined
+      continue
+    }
+    const known = schedule.crons.get(id)
+    next.set(id, known ?? { prompt, recurring, durable: false, expiresAt: now + CRON_LIFETIME_MS })
+  }
+  schedule.crons = next
+}
+
 /** Whether the process holding this schedule must outlive its idle timeout. */
 export function holdsProcess(schedule: LoopSchedule | undefined, now = Date.now()): boolean {
   if (schedule === undefined) return false

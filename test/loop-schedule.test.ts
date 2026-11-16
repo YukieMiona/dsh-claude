@@ -16,6 +16,7 @@ import {
   resumePrompt,
   scheduledTurnLabel,
   scheduledWakeup,
+  syncCrons,
 } from '../src/loop-schedule.ts'
 import { normalizeSdkMessage } from '../src/sdk-messages.ts'
 
@@ -186,6 +187,24 @@ describe('loop schedule helpers', () => {
     expect(rateLimitResetAt({ status: 'rejected', resetsAt: 1_800, overageStatus: 'allowed' })).toBeUndefined()
   })
 
+  it('takes the reported job list as the truth, leaving the tracked wakeup to its own path', () => {
+    const schedule = {
+      crons: new Map([['gone', { prompt: 'old', recurring: true, durable: false, expiresAt: 5 }]]),
+      wakeup: { scheduledFor: 1_000, prompt: '/loop check CI' },
+    }
+    syncCrons(schedule, [
+      { id: 'c1', schedule: '*/3 * * * *', recurring: true, prompt: 'A test loop.' },
+      { id: 'w1', schedule: '5 2 * * *', recurring: false, prompt: '/loop check CI' },
+    ], 100)
+    expect([...schedule.crons.keys()]).toEqual(['c1'])
+    expect(schedule.crons.get('c1')).toMatchObject({ prompt: 'A test loop.', recurring: true })
+    // Not a list: nothing is known, so nothing changes.
+    syncCrons(schedule, undefined)
+    expect(schedule.crons.size).toBe(1)
+    syncCrons(schedule, [])
+    expect(schedule.crons.size).toBe(0)
+  })
+
   it('normalizes a scheduler-fired turn start and leaves other lifecycle frames as telemetry', () => {
     expect(normalizeSdkMessage(wakeupStarted(42))).toEqual([{ kind: 'scheduled-turn', commandUuid: 'cli-command-1', source: 'loop_wakeup', scheduledFor: 42 }])
     expect(normalizeSdkMessage({ type: 'command_lifecycle', command_uuid: 'u', state: 'started' } as unknown as SDKMessage))
@@ -336,6 +355,24 @@ describe('Claude Code /loop under the supervisor', () => {
     await vi.advanceTimersByTimeAsync(CLAUDE_METADATA_TIMEOUT_MS + 1_000)
     await refresh
     expect(h.supervisor.snapshots()).toHaveLength(0)
+    await h.supervisor.dispose()
+  })
+
+  it('learns from the Stop hook that a resumed process holds a job it never saw created', async () => {
+    const h = harness(1_000)
+    const stream = await h.supervisor.runTurn({ agent: h.agent, prompt: 'hello', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    const stop = query.options.hooks!.Stop![0]!.hooks[0]!
+    await stop({ hook_event_name: 'Stop', session_crons: [{ id: 'c1', schedule: '*/3 * * * *', recurring: true, prompt: 'A test loop.' }] } as never, undefined, { signal: new AbortController().signal })
+    query.push(result('hi', { user_message_uuid: query.sent[0]?.uuid }))
+    await drain(stream)
+
+    // Held past the idle timeout, and the fire is labelled with the job's prompt.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(h.supervisor.snapshots()).toHaveLength(1)
+    query.push({ type: 'command_lifecycle', command_uuid: 'cli-cron', state: 'started', wakeup_source: 'schedule_wakeup', session_id: 'claude-1' } as unknown as SDKMessage)
+    await vi.waitFor(() => { expect(h.followups.map(followup => followup.text)).toEqual(['A test loop.']) })
     await h.supervisor.dispose()
   })
 
