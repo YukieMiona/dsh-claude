@@ -9,6 +9,9 @@ import {
   appendToolPaths,
   MACOS_TOOL_PATHS,
   toolPathEnv,
+  hostSpawnEnv,
+  HOST_GIT_CONFIG_GLOBAL,
+  type HostSpawnProbe,
 } from '../src/spawn.ts'
 
 function deferred<T>() {
@@ -57,10 +60,28 @@ describe('managed Claude process', () => {
 })
 
 describe('managed spawner', () => {
-  it('passes exact argv and removes credential-shaped environment', () => {
+  // The repo owner's root VPS: forge git config present, running as root.
+  const rootHost: HostSpawnProbe = { exists: path => path === HOST_GIT_CONFIG_GLOBAL, uid: 0 }
+  const userHost: HostSpawnProbe = { exists: () => false, uid: 501 }
+
+  function capture(probe: HostSpawnProbe) {
     const fake = fakeHandle()
-    let spec: SubprocessSpawnSpec | undefined
-    const spawn = createManagedClaudeSpawner({ spawn: value => { spec = value; return fake.handle } }, '/local/claude')
+    const captured: { spec?: SubprocessSpawnSpec } = {}
+    const spawn = createManagedClaudeSpawner(
+      { spawn: value => { captured.spec = value; return fake.handle } },
+      '/local/claude',
+      undefined,
+      probe,
+    )
+    return { spawn, captured }
+  }
+
+  function spawnOptions(env: Record<string, string>): SpawnOptions {
+    return { command: '/local/claude', args: [], cwd: '/workspace', env, signal: new AbortController().signal }
+  }
+
+  it('passes exact argv and removes credential-shaped environment', () => {
+    const { spawn, captured } = capture(rootHost)
     const options: SpawnOptions = {
       command: '/local/claude',
       args: ['--sdk-url', 'stdio'],
@@ -78,14 +99,52 @@ describe('managed spawner', () => {
       signal: new AbortController().signal,
     }
     spawn(options)
+    const spec = captured.spec
     expect(spec?.argv).toEqual(['/local/claude', '--sdk-url', 'stdio'])
     expect(spec?.cwd).toBe('/workspace')
     expect(spec?.env).toEqual({
       CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
       CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
       HOME: '/Users/test',
+      USER: process.env.USER || 'root',
+      GIT_CONFIG_GLOBAL: HOST_GIT_CONFIG_GLOBAL,
       CLAUDE_AGENT_SDK_CLIENT_APP: 'dsh-claude/0.1.0',
+      IS_SANDBOX: '1',
     })
+  })
+
+  it('sets the forge git config and IS_SANDBOX on a root host where the config exists', () => {
+    const { spawn, captured } = capture(rootHost)
+    spawn(spawnOptions({ IS_SANDBOX: '0' }))
+    expect(captured.spec?.env).toMatchObject({ GIT_CONFIG_GLOBAL: HOST_GIT_CONFIG_GLOBAL, IS_SANDBOX: '1' })
+  })
+
+  it('sets neither for a non-root user without the forge config', () => {
+    const { spawn, captured } = capture(userHost)
+    spawn(spawnOptions({ HOME: '/home/me', USER: 'me' }))
+    expect(captured.spec?.env).not.toHaveProperty('GIT_CONFIG_GLOBAL')
+    expect(captured.spec?.env).not.toHaveProperty('IS_SANDBOX')
+    expect(captured.spec?.env).toMatchObject({ HOME: '/home/me', USER: 'me' })
+  })
+
+  it('keeps a caller-provided GIT_CONFIG_GLOBAL', () => {
+    const { spawn, captured } = capture(rootHost)
+    spawn(spawnOptions({ GIT_CONFIG_GLOBAL: '/home/me/.gitconfig-work' }))
+    expect(captured.spec?.env?.GIT_CONFIG_GLOBAL).toBe('/home/me/.gitconfig-work')
+  })
+
+  it('decides host-only variables from the injected probes', () => {
+    const exists = vi.fn(() => true)
+    expect(hostSpawnEnv({ exists, uid: 0 })).toEqual({ GIT_CONFIG_GLOBAL: HOST_GIT_CONFIG_GLOBAL, IS_SANDBOX: '1' })
+    expect(exists).toHaveBeenCalledWith(HOST_GIT_CONFIG_GLOBAL)
+    expect(hostSpawnEnv({ exists: () => false, uid: 0 })).toEqual({ IS_SANDBOX: '1' })
+    expect(hostSpawnEnv({ exists: () => true, uid: 1000 })).toEqual({ GIT_CONFIG_GLOBAL: HOST_GIT_CONFIG_GLOBAL })
+    // No uid at all (Windows) is not root.
+    expect(hostSpawnEnv({ exists: () => false, uid: undefined })).toEqual({})
+    // A caller's own value is never replaced, and the file is not even probed.
+    const untouched = vi.fn(() => true)
+    expect(hostSpawnEnv({ exists: untouched, uid: 1000 }, { GIT_CONFIG_GLOBAL: '/x' })).toEqual({})
+    expect(untouched).not.toHaveBeenCalled()
   })
 
   it('rejects an SDK request to spawn a different executable', () => {

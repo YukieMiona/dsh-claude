@@ -54,6 +54,42 @@ export function toolPathEnv(env: NodeJS.ProcessEnv = process.env): Record<string
   return PATH === undefined ? {} : { PATH }
 }
 
+/** The git config a root-run DSH host keeps for its forge credentials. */
+export const HOST_GIT_CONFIG_GLOBAL = '/root/.dsh/git-forge/gitconfig'
+
+/** What `hostSpawnEnv` looks at, injectable so tests do not depend on the
+ *  machine they run on. */
+export interface HostSpawnProbe {
+  /** Synchronous existence check (`existsSync`). */
+  readonly exists: (path: string) => boolean
+  /** The process's uid; `undefined` where there is none (Windows). */
+  readonly uid: number | undefined
+}
+
+export function defaultHostSpawnProbe(): HostSpawnProbe {
+  return { exists: existsSync, uid: process.getuid?.() }
+}
+
+/** Host-specific variables for the CLI, set only where they apply.
+ *
+ *  `GIT_CONFIG_GLOBAL` replaces `~/.gitconfig` outright, so pointing it at a
+ *  file that does not exist silently drops the user's git identity and
+ *  settings: set it only when the forge config is there and the caller has not
+ *  chosen its own. `IS_SANDBOX=1` lifts the CLI's refusal to bypass
+ *  permissions as root; a non-root user never hits that check, so it is set
+ *  only for root. One `stat` per spawn, and spawns are per session. */
+export function hostSpawnEnv(
+  probe: HostSpawnProbe = defaultHostSpawnProbe(),
+  provided: Readonly<Record<string, string | undefined>> = {},
+): { GIT_CONFIG_GLOBAL?: string; IS_SANDBOX?: string } {
+  const env: { GIT_CONFIG_GLOBAL?: string; IS_SANDBOX?: string } = {}
+  if (provided.GIT_CONFIG_GLOBAL === undefined && probe.exists(HOST_GIT_CONFIG_GLOBAL)) {
+    env.GIT_CONFIG_GLOBAL = HOST_GIT_CONFIG_GLOBAL
+  }
+  if (probe.uid === 0) env.IS_SANDBOX = '1'
+  return env
+}
+
 export class ManagedClaudeProcess extends EventEmitter implements SpawnedProcess {
   readonly stdin: Writable
   readonly stdout: Readable
@@ -112,6 +148,7 @@ export function createManagedClaudeSpawner(
   runtime: Pick<SubprocessRuntime, 'spawn'>,
   executablePath: string,
   observe?: SpawnObserver,
+  probe: HostSpawnProbe = defaultHostSpawnProbe(),
 ): (options: SpawnOptions) => SpawnedProcess {
   return options => {
     if (options.command !== executablePath) {
@@ -133,14 +170,15 @@ export function createManagedClaudeSpawner(
       // by default for every model newer than the CLI's legacy list (Opus 4.8+,
       // Opus 5.x, Fable, Sonnet 5); they feed the Host to-do dock and the team
       // board, so the plugin opts in. A user's own setting still wins.
+      // `hostSpawnEnv` goes last: it never overrides a caller's
+      // GIT_CONFIG_GLOBAL, and IS_SANDBOX must hold for root regardless.
       env: appendToolPaths(scrubClaudeSpawnEnv({
         CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
         CLAUDE_CODE_ENABLE_TODO_TOOLS: '1',
         HOME: process.env.HOME || '/root',
         USER: process.env.USER || 'root',
-        GIT_CONFIG_GLOBAL: '/root/.dsh/git-forge/gitconfig',
         ...options.env,
-        IS_SANDBOX: '1',
+        ...hostSpawnEnv(probe, options.env),
       })),
     })
     const managed = new ManagedClaudeProcess(handle)
