@@ -4,26 +4,74 @@ import type { WebRouteKind } from '@deepseek-ai/dsh-host-webserver'
 import { deadline } from '@deepseek-ai/dsh-timeout'
 import { ROUTE_BUDGET_MS, type RouteBudget } from './plugin-budget.ts'
 
-/** Accept only loopback, same-origin browser requests to plugin-private routes. */
+/** A literal loopback authority (`host[:port]`). A name that merely resolves
+ *  to loopback does not count: that is what DNS rebinding forges. */
+const LOOPBACK_AUTHORITY = /^(?:127\.0\.0\.1|\[?::1\]?|localhost)(?::\d+)?$/i
+
+/** Accept a plugin-private route request when either of two paths admits it.
+ *
+ *  1. The Host's connection service, when present, says `requestRejection(req)
+ *     === undefined`. This path carries remote access: it applies the
+ *     operator's configured trusted hosts (a reverse proxy, a LAN address) and
+ *     browser authentication. A rejection or a throw from it is not final.
+ *  2. Otherwise, the strict loopback check that was the only rule before the
+ *     connection service was consulted: a loopback socket, not `cross-site`, a
+ *     Host header that is a literal loopback authority, and an Origin (if any)
+ *     whose host equals that Host header.
+ *
+ *  Path 2 stays because the service's rejection cannot be treated as final:
+ *  the local DSH Desktop renderer need not carry the `dsh-auth-*` cookie, so
+ *  the service can answer 401 for a request that is plainly local, and every
+ *  plugin route would then return 403.
+ *
+ *  The loopback-authority test in path 2 is what makes that fallback safe. A
+ *  page on `rebinding.example` whose DNS record is switched to 127.0.0.1 sends
+ *  `Host: rebinding.example` and `Origin: http://rebinding.example` from a
+ *  loopback socket: same-origin by every other measure. Only requiring the
+ *  authority itself to be `localhost`, `127.0.0.1` or `[::1]` refuses it. */
 export function trustedRequest(req: IncomingMessage, ctx?: any): boolean {
-  try {
-    const conn = ctx?.connection ?? (typeof ctx?.get === 'function' ? ctx.get('connection') : undefined)
-    if (conn && typeof conn.requestRejection === 'function') {
-      if (conn.requestRejection(req) === undefined) return true
+  return connectionAdmits(req, ctx) || loopbackSameOrigin(req)
+}
+
+/** The Host's connection service, when this composition has one.
+ *
+ *  Looked up with `ctx.get`, never as `ctx.connection`: the plugin does not
+ *  declare `connection` in its `inject` (older Hosts have no such service),
+ *  and cordis throws on property access to an undeclared service. Reading the
+ *  property first made this path fail silently on every request. */
+function connectionService(ctx: any): { requestRejection(req: IncomingMessage): unknown } | undefined {
+  for (const read of [() => ctx?.get?.('connection'), () => ctx?.connection]) {
+    try {
+      const conn = read()
+      if (conn !== undefined && conn !== null && typeof conn.requestRejection === 'function') return conn
+    } catch {
+      // Not available through this accessor; try the next.
     }
-  } catch {}
+  }
+  return undefined
+}
+
+function connectionAdmits(req: IncomingMessage, ctx: any): boolean {
+  try {
+    const conn = connectionService(ctx)
+    return conn !== undefined && conn.requestRejection(req) === undefined
+  } catch {
+    return false
+  }
+}
+
+function loopbackSameOrigin(req: IncomingMessage): boolean {
   const remote = req.socket.remoteAddress
   if (remote !== '127.0.0.1' && remote !== '::1' && remote !== '::ffff:127.0.0.1') return false
   const site = req.headers['sec-fetch-site']
   if (site === 'cross-site') return false
   const host = req.headers.host
-  if (host === undefined) return false
+  if (host === undefined || !LOOPBACK_AUTHORITY.test(host)) return false
   const origin = req.headers.origin
   if (origin === undefined) return true
   try {
     const originUrl = new URL(origin)
-    const hostUrl = new URL(originUrl.protocol + '//' + host)
-    return originUrl.host === hostUrl.host
+    return originUrl.host === host && LOOPBACK_AUTHORITY.test(originUrl.host)
   } catch {
     return false
   }
