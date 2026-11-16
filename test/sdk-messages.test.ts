@@ -310,6 +310,11 @@ describe('Claude SDK message normalization', () => {
       rate_limit_info: { status: 'allowed', resetsAt: 1787042400, rateLimitType: 'five_hour', isUsingOverage: false },
     }))
     expect(healthy).toMatchObject([{ kind: 'status', title: 'Claude rate limit status changed' }])
+    const warning = normalizeSdkMessage(sdk({
+      type: 'rate_limit_event',
+      rate_limit_info: { status: 'allowed_warning', resetsAt: 1787042400, rateLimitType: 'seven_day', utilization: 0.96 },
+    }))
+    expect(warning).toMatchObject([{ kind: 'status', title: 'Claude rate limit status changed' }])
     const blocked = normalizeSdkMessage(sdk({
       type: 'rate_limit_event',
       rate_limit_info: { status: 'blocked', rateLimitType: 'five_hour' },

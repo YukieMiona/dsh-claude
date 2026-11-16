@@ -27,7 +27,7 @@ Ship an out-of-tree DSH bundle named `dsh-claude` that adds a `Claude Code CLI` 
 4. Claude Code owns its internal agent loop and built-in tools.
 5. DSH streams final user-visible text and renders complete Claude activity cards for thinking summaries, tool calls/results, subagents, permissions, usage, status, and failures.
 6. Tool permission requests appear in the existing DSH approval flow.
-7. A live Claude process remains attached to an active DSH session and is reclaimed after an idle limit.
+7. A live Claude process remains attached to an active DSH session and is reclaimed after an idle limit, unless it holds a Claude Code schedule (3.8).
 8. DSH refresh/restart can resume the Claude session through its persisted Claude session id.
 9. Existing non-Claude DSH presets and sessions keep their current behavior.
 
@@ -66,6 +66,7 @@ This is an agent bridge at the LLM seam, not a claim that Claude Code is a state
 | Local Claude auth, settings, CLAUDE.md, Skills, Hooks, Plugins, MCP | Existing Claude Code installation and `~/.claude` |
 | Claude process lifetime and whole-turn cancellation | Plugin process supervisor over DSH managed subprocess |
 | Claude background task execution and per-task lifecycle | Claude Code CLI; plugin observes SDK lifecycle only |
+| Claude schedules (`/loop`, `ScheduleWakeup`, `CronCreate`) and their firing | Claude Code CLI; plugin shows fired turns and restarts a lost loop (3.8) |
 | Tool permission decision UI and audit | DSH approval service |
 | Claude-to-DSH session binding | Plugin-owned sidecar keyed by DSH session id |
 | Claude internal activity presentation | Redacted sidecar data exposed through a trusted Host projection |
@@ -146,8 +147,8 @@ Responsibilities:
 - record the Claude session id from initialization/result messages
 - route SDK messages to the active request
 - interrupt and terminate the owned process tree on DSH cancellation
-- idle eviction (default 30 minutes)
-- bounded live process count (default 4), evicting enough least-recently-idle entries to honor a lowered limit and waiting FIFO for user-turn capacity when every entry is busy
+- idle eviction (default 30 minutes), except for a process holding a pending wakeup or live session cron (3.8)
+- bounded live process count (default 4), evicting enough least-recently-idle entries (those holding a schedule last) to honor a lowered limit and waiting FIFO for user-turn capacity when every entry is busy
 - dispose all processes during plugin shutdown
 - restart with `resume` after normal eviction or host restart
 - never automatically replay an in-flight prompt after an ambiguous crash
@@ -232,7 +233,7 @@ DSH session logs contain only DSH-supported event types. The plugin must not mut
 
 The canonical plugin state is a schema-versioned JSON sidecar keyed by the DSH session id under `$DSH_HOME/plugins/dsh-claude/sessions`. It stores the Claude resume binding, ordered activity records, and latest task snapshot. Writes are serialized per session and published with same-directory atomic rename; the directory is mode `0700` and documents are mode `0600`. Revisions increase monotonically, activities are capped, and every read is strictly validated. Streaming assistant prose is additionally held in an in-memory overlay that notifies live projection subscribers synchronously and coalesces its disk persistence within a short trailing window; segment close and turn settlement force a durable flush, so a hard Host crash can lose at most the trailing sub-second of visible prose and never a Claude outcome.
 
-Each ordinary DSH turn maps to one user-initiated Claude turn. If that Claude result leaves background tasks running, the DSH turn remains open: its primary text is emitted as one completed text block, all task settlements are coalesced, and one plugin-authored hidden follow-up input asks the same Claude session to report final outcomes as a second text block before the single terminal DSH finish. The plugin never fabricates assistant text. Sidecar activities retain `turn`, `step`, and `ordinal` so the Client can place them immediately before the corresponding standard Claude assistant message in the chat flow. SDK `total_cost_usd` is cumulative across streaming-input turns and is retained as the latest cumulative value rather than summed.
+Each ordinary DSH turn maps to one user-initiated Claude turn. The exception is a turn Claude Code's scheduler fires: a plugin-issued follow-up DSH turn attaches to it and sends no prompt (3.8). If the Claude result leaves background tasks running, the DSH turn remains open: its primary text is emitted as one completed text block, all task settlements are coalesced, and one plugin-authored hidden follow-up input asks the same Claude session to report final outcomes as a second text block before the single terminal DSH finish. The plugin never fabricates assistant text. Sidecar activities retain `turn`, `step`, and `ordinal` so the Client can place them immediately before the corresponding standard Claude assistant message in the chat flow. SDK `total_cost_usd` is cumulative across streaming-input turns and is retained as the latest cumulative value rather than summed.
 
 Context usage samples are not collected or persisted; the SDK `getContextUsage()` response is read only for a model's context window (see 5.4). All sidecar payloads are bounded and secret-aware: environment maps, credential-shaped keys, and known token fields are redacted before persistence.
 
@@ -261,6 +262,16 @@ The plugin may provide a plugin-owned context refresh command, but must not shad
 - Prompt suggestion: the spawn sets `promptSuggestions: true`; the CLI's `prompt_suggestion` (after `result`, never mid-turn) is stored as sidecar `promptSuggestion` and published as a `promptSuggestion` carrier line, and cleared when the next turn starts. The client draws the part the draft has not typed yet as ghost text through its own attribute and custom property on the Host editor's wrapper (trailing the last paragraph, or in the placeholder seat for an empty draft); Tab, or → with the caret at the end, replaces the draft with it via `setDraft`. A `/` draft is left to the command menu.
 - Rewind: transcript anchoring and optional checkout restoration while retaining append-only DSH history. Stop cleanup is serialized with the next same-session turn; do not remove resume state to handle cancellation.
 
+### 3.8 Claude Code scheduler
+
+Claude Code owns `/loop`, `ScheduleWakeup`, and `CronCreate`/`CronDelete`. While its process lives and the streaming input stays open, the CLI fires each wakeup and cron turn itself, on time (wakeup delays are clamped to 60–3600 s and aligned to a minute boundary). Such a turn begins with a `command_lifecycle` frame `{ state: 'started', wakeup_source: 'loop_wakeup' | 'schedule_wakeup', scheduled_for }`, and its result carries no user message uuid. The plugin never fires a wakeup itself while the process holding it is alive; an earlier host-timer bridge double-fired and was removed. The spawn must not set `CLAUDE_CODE_DISABLE_CRON`: `ScheduleWakeup` then reports success but never fires. Verified against Claude Code 2.1.318 through the Agent SDK in streaming-input mode.
+
+- Fired turns: when a scheduler-fired turn starts with no DSH turn open, the supervisor asks the DSH agent for a follow-up turn and holds that process's message stream (bounded wait) until DSH opens it. The follow-up is a plugin-issued message, shown as a user message whose text is the loop prompt (`Scheduled wakeup: <reason>` for a `<<…>>` sentinel; for a cron fire, the cron's prompt when the session has exactly one cron, else `Scheduled task`); its turn attaches to the CLI's in-flight turn and sends no prompt. Plugin-issued follow-ups are matched by DSH message id, never by text, and one that arrives after its scheduled turn is gone closes empty. A user prompt that reaches DSH first takes over the scheduled turn, and the prompt is queued behind it. While a scheduled turn is being attached, permission and `AskUserQuestion` requests wait for the turn instead of being denied, and a model or effort change is deferred to the next turn.
+- Process lifetime: a process holding a pending wakeup (until its due time plus 90 s) or a live non-durable session cron is exempt from the idle timeout and is evicted last under the process limit. Non-durable crons are forgotten when their process ends.
+- Fallback: if a wakeup has not started 90 s after its due time and the process that held it is gone (evicted, crashed while idle, or replaced), the plugin restarts the loop by sending the user's original `/loop …` command as a follow-up turn (or, when none was recorded, the wakeup's own prompt if it is not a sentinel). It never sends a `<<…>>` sentinel, which means something only to the scheduler that armed it. There is no fallback after Stop (a user interrupt cancels the loop), after an outcome-unknown crash during a turn (section 6), after a session reset or rewind, or once the loop has ended without rescheduling.
+- Usage limits: if a `/loop` turn fails after a `rate_limit_event` reported `status: 'rejected'` with no overage in use, and the loop did not reschedule, the plugin restarts it once, the same way, at the reported `resetsAt` plus 60 s. Limits are never inferred from assistant prose, and `allowed_warning` is not a blocking state.
+- Persistence: none. Schedules live in Claude Code's process and the plugin's memory, so a Host restart or plugin reload ends loops.
+
 ## 4. Permission Contract
 
 `canUseTool(toolName, input, context)` performs:
@@ -282,7 +293,7 @@ Under `auto`, a classifier block never reaches `canUseTool`. A `PermissionDenied
 
 Claude `AskUserQuestion` is an interaction, not an approval. `canUseTool` must route it before approval or Full access handling, map its bounded `questions` array to `ctx.userQuestions.ask({ questions, agent, signal })`, wait for the native DSH answer, and return an SDK allow result whose `updatedInput` preserves the original questions and adds Claude's required `answers` object keyed by question text. Multi-select values are comma-separated labels; DSH custom text replaces a single-select choice and supplements multi-select labels.
 
-Full access never bypasses a user question. Missing active-turn ownership, malformed or duplicate questions, native provider failure, cancellation, and abort all fail closed with an SDK deny result. Sidecar activity records pending/completed/cancelled state and bounded question prompts. The completed row also keeps the answers (selected labels and custom text) in its summary and as `detail.answers` keyed by question text, redacted and bounded like any activity, so the transcript's `AskUserQuestion` card can show what was decided. Claude's own tool result already carries the same answers, and the sidecar is a local, owner-only file; the row exists because that result is a bounded blob whose answers come last and can be cut. Ordinary tools continue through `ctx.approval` unchanged.
+Full access never bypasses a user question. A question asked while a scheduled turn is being attached waits for that turn (3.8); otherwise missing active-turn ownership, malformed or duplicate questions, native provider failure, cancellation, and abort all fail closed with an SDK deny result. Sidecar activity records pending/completed/cancelled state and bounded question prompts. The completed row also keeps the answers (selected labels and custom text) in its summary and as `detail.answers` keyed by question text, redacted and bounded like any activity, so the transcript's `AskUserQuestion` card can show what was decided. Claude's own tool result already carries the same answers, and the sidecar is a local, owner-only file; the row exists because that result is a bounded blob whose answers come last and can be cut. Ordinary tools continue through `ctx.approval` unchanged.
 
 ## 5. Client Components
 
@@ -384,9 +395,11 @@ Plugin updates must install the registry's validated latest version explicitly r
 | permission answer unavailable | deny action and continue Claude turn where possible |
 | user cancels | call query interrupt, then terminate tree if not quiescent |
 | process exits while idle | mark disconnected; resume on next prompt |
-| process exits mid-turn after activity | persist a sidecar outcome-unknown error; never replay prompt automatically |
+| process exits mid-turn after activity | persist a sidecar outcome-unknown error; never replay prompt automatically, and suppress the `/loop` fallback (3.8) |
+| scheduled wakeup not started 90 s after its due time; holding process gone | send the user's original `/loop …` command as a follow-up turn (3.8); this restarts a loop whose last turn settled, not a replay of an ambiguous turn |
+| `/loop` turn rejected by a usage limit and not rescheduled | restart the loop once at the reported `resetsAt` plus 60 s (3.8) |
 | persisted Claude session missing | fail explicitly with option to start a new DSH conversation; no silent context reset |
-| process limit reached | evict enough least-recently-idle entries; if every entry is busy, wait FIFO before prompt submission until capacity changes or the user cancels; metadata reads remain best-effort and do not wait |
+| process limit reached | evict enough least-recently-idle entries, those holding a schedule last; if every entry is busy, wait FIFO before prompt submission until capacity changes or the user cancels; metadata reads remain best-effort and do not wait |
 | plugin unload | terminate and await all owned trees |
 
 ## 7. Compatibility
@@ -412,6 +425,7 @@ Plugin updates must install the registry's validated latest version explicitly r
 - sidecar binding persistence, legacy-event import, and resume selection
 - permission allow/deny/cancel/unavailable mapping
 - process supervisor serialization, cancellation, idle eviction, process cap, crash classification, and disposal
+- scheduler-fired turn attach, follow-up matching by message id, schedule eviction exemption, `/loop` fallback and its suppression cases, and usage-limit restart
 - SDK message fixtures for init, partial text, tool use/result, permission, usage, success, failure, and malformed input
 - command catalog projection, aliases, DSH/Client-name collision prefixing, ordinary-message delivery, and absence of Host command lifecycle events
 - context-window probe after a completed turn, cached per model, never blocking the turn
@@ -433,6 +447,7 @@ Plugin updates must install the registry's validated latest version explicitly r
 - refresh the page and continue the same live session
 - restart DSH and resume the persisted Claude session
 - idle-evict and resume
+- run `/loop` and confirm each wakeup fires once and appears as its own DSH turn while the composer is idle
 - type `/` and verify Claude Skills/Commands are discoverable with DSH collisions prefixed
 - execute one Claude Skill and confirm it runs as an ordinary DSH turn with activity and approval behavior intact, with no command status row under the preceding response
 - run Doctor with the actual resolved local executable; do not assume a macOS path

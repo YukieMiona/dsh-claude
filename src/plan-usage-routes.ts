@@ -20,6 +20,16 @@ export function registerPlanUsageRoute(
   probe: (fetchedAt: number) => Promise<PlanUsageReport>,
   now: () => number = Date.now,
 ): void {
+  // One probe at a time: a second click, or a second tab, joins the read that
+  // is already running instead of starting another CLI beside it.
+  let inflight: Promise<PlanUsageReport> | undefined
+  const refresh = (): Promise<PlanUsageReport> => {
+    inflight ??= probe(now()).then(report => {
+      recordPlanUsage(report)
+      return report
+    }).finally(() => { inflight = undefined })
+    return inflight
+  }
   registerPluginRoute(ctx, {
     mode: 'unary',
     kind: 'exact',
@@ -30,9 +40,7 @@ export function registerPlanUsageRoute(
     handler: async io => {
       if (io.method === 'GET') return { status: 200, value: latestPlanUsage() ?? EMPTY }
       try {
-        const report = await probe(now())
-        recordPlanUsage(report)
-        return { status: 200, value: report }
+        return { status: 200, value: await refresh() }
       } catch (error) {
         return { status: 500, value: { error: safeMessage(error) } }
       }

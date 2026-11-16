@@ -22,7 +22,10 @@ export interface ActivePermissionContext {
   appendActivity: (activity: ClaudeActivityInput) => Promise<void>
 }
 
-export type ActivePermissionContextProvider = () => ActivePermissionContext | undefined
+/** May resolve later: while a turn Claude Code's scheduler started is being
+ *  attached to a DSH turn, the provider waits for it instead of answering
+ *  "no turn" and denying the request as if the user had refused. */
+export type ActivePermissionContextProvider = () => ActivePermissionContext | undefined | Promise<ActivePermissionContext | undefined>
 
 function denialMessage(outcome: ApprovalOutcome): string {
   switch (outcome) {
@@ -181,7 +184,7 @@ export function createPermissionBridge(
           }
         : userQuestion(input, options)
     }
-    const active = activeContext()
+    const active = await activeContext()
     if (active === undefined) {
       return {
         behavior: 'deny',

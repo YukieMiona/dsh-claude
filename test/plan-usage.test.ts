@@ -96,6 +96,17 @@ describe('probePlanUsage', () => {
     expect(options.abortController?.signal.aborted).toBe(true)
   })
 
+  it('starts the probe without the user\'s settings, plugins or MCP servers', async () => {
+    let options!: Record<string, unknown>
+    await probePlanUsage('/opt/claude', 1, params => {
+      options = params.options as Record<string, unknown>
+      return fakeQuery() as never
+    })
+    expect(options.settingSources).toEqual([])
+    expect(options.mcpServers).toEqual({})
+    expect(options.strictMcpConfig).toBe(true)
+  })
+
   it('lets the SDK resolve the executable when none is configured', async () => {
     let options!: Record<string, unknown>
     await probePlanUsage('', 1, params => {
@@ -166,6 +177,28 @@ describe('plan usage route', () => {
     // The cache now backs plain GETs without another probe process.
     expect(await call(handler, 'GET')).toEqual({ status: 200, body: latestPlanUsage() })
     expect(probe).toHaveBeenCalledTimes(1)
+  })
+
+  it('joins a refresh already in flight instead of starting a second probe', async () => {
+    resetPlanUsage()
+    let finish!: () => void
+    const gate = new Promise<void>(resolve => { finish = resolve })
+    const probe = vi.fn(async (fetchedAt: number) => {
+      await gate
+      return normalizePlanUsage(SDK_RESPONSE, fetchedAt)
+    })
+    const { handler } = harness(probe)
+    const both = Promise.all([call(handler, 'POST'), call(handler, 'POST')])
+    await new Promise(resolve => setTimeout(resolve, 5))
+    finish()
+    const [first, second] = await both
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(first.status).toBe(200)
+    expect(second.body).toEqual(first.body)
+
+    // A later click probes afresh.
+    await call(handler, 'POST')
+    expect(probe).toHaveBeenCalledTimes(2)
   })
 
   it('rejects other methods and non-loopback callers', async () => {

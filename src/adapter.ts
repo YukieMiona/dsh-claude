@@ -117,17 +117,26 @@ function imageBlock(data: Uint8Array, mediaType: ImageMediaType): ClaudePromptBl
   }
 }
 
+/** The newest direct human message: the one a turn answers. Request-only
+ *  user inputs (Host 0.1.7) carry no source and are not that durable turn. */
+function newestDirectUserMessage(messages: GenerateOptions['messages']) {
+  return [...messages].reverse().find(candidate => candidate.role === 'user' && candidate.source?.kind === 'user')
+}
+
+/** Id of the message this turn answers, so the supervisor can recognise a
+ *  follow-up turn it asked the agent for itself. */
+export function directUserMessageId(messages: GenerateOptions['messages']): string | undefined {
+  const id = newestDirectUserMessage(messages)?.id
+  return typeof id === 'string' ? id : undefined
+}
+
 /** Resolve only the newest direct human message; Claude's session owns history. */
 export async function resolveDirectUserPrompt(
   messages: GenerateOptions['messages'],
   attachments: AttachmentReader,
   signal?: AbortSignal,
 ): Promise<ClaudePrompt> {
-  const message = [...messages].reverse().find(candidate => (
-    // Request-only user inputs (Host 0.1.7) carry no source and are not the
-    // durable human turn this route answers.
-    candidate.role === 'user' && candidate.source?.kind === 'user'
-  ))
+  const message = newestDirectUserMessage(messages)
   if (message === undefined) {
     throw new Error('dsh-claude: no direct human input was present in this model step')
   }
@@ -388,8 +397,10 @@ export class ClaudeCodeAdapter extends LlmAdapter {
     // drawing it, so the turn finished with nothing on screen.
     const renderMode = await this.#renderMode()
     const native = renderMode === 'native'
+    const messageId = directUserMessageId(options.messages)
     const events = await this.#supervisor.runTurn({
       agent,
+      ...(messageId === undefined ? {} : { messageId }),
       prompt: injectReviewComments(prompt, this.#drainReviewComments(agent.id as string)),
       model: options.model,
       renderMode,

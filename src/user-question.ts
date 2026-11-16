@@ -16,7 +16,7 @@ export interface ActiveUserQuestionContext {
   appendActivity: (activity: ClaudeActivityInput) => Promise<void>
 }
 
-export type ActiveUserQuestionContextProvider = () => ActiveUserQuestionContext | undefined
+export type ActiveUserQuestionContextProvider = () => ActiveUserQuestionContext | undefined | Promise<ActiveUserQuestionContext | undefined>
 export type UserQuestionBridge = (
   input: Record<string, unknown>,
   options: Parameters<CanUseTool>[2],
@@ -89,7 +89,7 @@ export function createUserQuestionBridge(
   activeContext: ActiveUserQuestionContextProvider,
 ): UserQuestionBridge {
   return async (input, options) => {
-    const active = activeContext()
+    const active = await activeContext()
     if (active === undefined) return deny('No active DeepSeek Harness turn owns this Claude Code question.', options.toolUseID)
 
     const questions = parseQuestions(input, options.toolUseID)

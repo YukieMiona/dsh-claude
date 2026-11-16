@@ -32,14 +32,34 @@ import { ClaudeSidecarRepository } from './sidecar.ts'
 import { claudePermissionMode, type ClaudePermissionMode, type ClaudePermissionSelector } from './permission-mode.ts'
 import { normalizeSdkMessage, type NormalizedSdkMessage } from './sdk-messages.ts'
 import { claudeModelRow, claudeModelValue, recordClaudeModels } from './model-catalog.ts'
-import { findRateLimitResetDelayMs, latestPlanUsage, readPlanUsageFrom } from './plan-usage.ts'
+import { readPlanUsageFrom } from './plan-usage.ts'
+import {
+  CRON_LIFETIME_MS,
+  LOOP_WAKEUP_GRACE_MS,
+  createdCron,
+  deletedCronId,
+  holdsProcess,
+  isLoopCommand,
+  promptText,
+  rateLimitResetAt,
+  resumePrompt,
+  scheduledTurnLabel,
+  scheduledWakeup,
+  type LoopSchedule,
+  type PendingWakeup,
+} from './loop-schedule.ts'
 import { createManagedClaudeSpawner, type ManagedClaudeProcess } from './spawn.ts'
 import { captureWorktreeTree } from './worktree-snapshot.ts'
 import { hostJobKind, hostJobProgress, type ClaudeHostJobs } from './host-jobs.ts'
 import type {} from '@deepseek-ai/dsh-tool-todo'
 import { ClaudeTaskBoard, carriedTodos, todosFromTodoWrite, type TodoItem } from './todo-bridge.ts'
 
-export const CLAUDE_INITIALIZATION_TIMEOUT_MS = 30_000
+/** How long a new Claude Code process may take to answer `initialize`.
+ *  Start-up loads the user's settings, plugins and SessionStart hooks, and on
+ *  a small or busy host that alone has measured 11–24 s; a model or effort
+ *  switch pays it again because it rebuilds the process. A limit close to that
+ *  fails turns that would have worked a moment later. */
+export const CLAUDE_INITIALIZATION_TIMEOUT_MS = 90_000
 export const CLAUDE_INTERRUPT_TIMEOUT_MS = 5_000
 /** Control requests must settle; a wedged one must not clog the metadata chain. */
 export const CLAUDE_METADATA_TIMEOUT_MS = 15_000
@@ -175,6 +195,9 @@ export interface ClaudeTurnRequest {
    *  Omitted falls back to the shared config. */
   renderMode?: ClaudeRenderMode
   signal?: AbortSignal
+  /** The DSH message this turn answers. Lets the supervisor recognise the
+   *  follow-up turns it asked the agent for itself. */
+  messageId?: string
 }
 
 export interface ClaudeSupervisorSnapshot {
@@ -222,6 +245,11 @@ export type ClaudeQueryFactory = (params: {
 
 interface ActiveTurn {
   agent: Agent
+  /** Whether this turn belongs to a /loop: it ran the `/loop` command, a
+   *  scheduled wakeup, or changed the schedule. */
+  loopTurn?: boolean
+  /** When a `rate_limit_event` rejected this turn, the epoch ms the quota resets. */
+  rateLimitResetAt?: number
   cursor: ClaudeActivityCursor
   /** Last complete text block recorded per subagent call: the CLI re-sends a
    *  message's blocks as each one completes, and one copy is enough. */
@@ -298,6 +326,14 @@ interface SupervisorEntry {
   reportedUnknownTypes: Set<string>
   /** Live Claude task board (subagents and background tasks), keyed by task id. */
   tasks: Map<string, ClaudeTaskInfo>
+  /** Root ScheduleWakeup / CronCreate / CronDelete calls awaiting their result. */
+  scheduleCalls: Map<string, { toolName: string; input: unknown }>
+  /** Set while a turn the CLI's scheduler started waits for DSH to open a
+   *  turn for it. `followupId` is the DSH message the supervisor asked for. */
+  adoption?: { followupId: string; label: string; attached: Promise<boolean>; attach: () => void }
+  /** A scheduler-fired turn is running that no DSH turn draws (attaching timed
+   *  out or no agent was reachable). The process is busy until its result. */
+  orphanScheduledTurn?: boolean
   /** Claude's task-tool list (TaskCreate / TaskUpdate), mirrored into the Host to-do dock. */
   taskBoard: ClaudeTaskBoard
   /** Last time a task snapshot was persisted (progress throttling). */
@@ -460,51 +496,23 @@ function pluginDrawnUnderNative(activity: ClaudeActivityInput): boolean {
     || (activity.kind === 'subagent' && activity.parentToolUseId !== undefined)
 }
 
-function parseCronDelayMs(cron: string): number {
-  if (typeof cron !== 'string') return 600_000
-  const parts = cron.trim().split(/\s+/)
-  if (parts.length >= 5) {
-    const min = parts[0] ?? ''
-    const hour = parts[1] ?? ''
-    const dom = parts[2] ?? ''
-    const stepMin = min.match(/^\*\/(\d+)$/)
-    if (stepMin && stepMin[1] !== undefined) {
-      const n = parseInt(stepMin[1], 10)
-      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 60_000, 10_000), 86_400_000)
-    }
-    const stepHour = hour.match(/^\*\/(\d+)$/)
-    if (stepHour && stepHour[1] !== undefined && (min === '0' || min === '*')) {
-      const n = parseInt(stepHour[1], 10)
-      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 3_600_000, 10_000), 86_400_000)
-    }
-    const stepDay = dom.match(/^\*\/(\d+)$/)
-    if (stepDay && stepDay[1] !== undefined && min === '0' && hour === '0') {
-      const n = parseInt(stepDay[1], 10)
-      if (Number.isFinite(n) && n > 0) return Math.min(Math.max(n * 86_400_000, 10_000), 86_400_000)
-    }
-    const now = new Date()
-    const targetMinMatch = min.match(/^(\d+)$/)
-    const targetHourMatch = hour.match(/^(\d+)$/)
-    const targetMin = targetMinMatch && targetMinMatch[1] !== undefined ? parseInt(targetMinMatch[1], 10) : undefined
-    const targetHour = targetHourMatch && targetHourMatch[1] !== undefined ? parseInt(targetHourMatch[1], 10) : undefined
-    if (targetMin !== undefined && targetHour !== undefined) {
-      const next = new Date(now)
-      next.setSeconds(0, 0)
-      next.setHours(targetHour, targetMin)
-      if (next.getTime() <= now.getTime()) {
-        next.setDate(next.getDate() + 1)
-      }
-      return Math.max(next.getTime() - now.getTime(), 10_000)
-    }
-  }
-  return 600_000
-}
+/** Root tool calls that change what Claude Code's own scheduler holds. */
+const SCHEDULE_TOOLS = new Set(['ScheduleWakeup', 'CronCreate', 'CronDelete'])
+
+/** How long the message stream waits for DSH to open a turn for a turn the
+ *  CLI's scheduler started, before letting its output fall through unseen. */
+const SCHEDULED_TURN_ADOPTION_TIMEOUT_MS = 120_000
+
+/** A session's scheduler bookkeeping. It outlives any one process: the
+ *  fallback must still fire after the process that held the schedule is gone. */
+type LoopState = LoopSchedule & { fallback?: ReturnType<typeof setTimeout> }
 
 export class ClaudeSupervisor {
   readonly #entries = new Map<string, SupervisorEntry>()
   readonly #interruptions = new Map<string, Promise<void>>()
-  readonly #activeWakeups = new Map<string, { timer: ReturnType<typeof setTimeout>; targetTime: number; prompt: string; reason: string }>()
-  readonly #activeCrons = new Map<string, { timer: ReturnType<typeof setTimeout>; cron: string; prompt: string; recurring: boolean }>()
+  readonly #loops = new Map<string, LoopState>()
+  /** Follow-up turns the supervisor asked an agent for, by DSH message id. */
+  readonly #issuedFollowups = new Map<string, { sessionId: string; kind: 'scheduled' | 'resume' }>()
   readonly #runtime: Pick<SubprocessRuntime, 'spawn' | 'resolveExecutable'>
   readonly #approval: Pick<ApprovalService, 'request'>
   readonly #userQuestions: Pick<UserQuestionService, 'ask'>
@@ -648,6 +656,223 @@ export class ClaudeSupervisor {
     return active.ownedPromptUuids.size < MAX_STEERED_PROMPTS_PER_TURN
   }
 
+  #loop(sessionId: string): LoopState {
+    let loop = this.#loops.get(sessionId)
+    if (loop === undefined) {
+      loop = { crons: new Map() }
+      this.#loops.set(sessionId, loop)
+    }
+    return loop
+  }
+
+  #clearLoop(sessionId: string): void {
+    const loop = this.#loops.get(sessionId)
+    if (loop?.fallback !== undefined) clearTimeout(loop.fallback)
+    this.#loops.delete(sessionId)
+    for (const [id, issued] of this.#issuedFollowups) {
+      if (issued.sessionId === sessionId) this.#issuedFollowups.delete(id)
+    }
+  }
+
+  /** Stop the plugin's part in a loop: no fallback, no restart. Claude Code's
+   *  own schedule ends with the process, which the callers are ending too. */
+  #endLoop(sessionId: string, reason: string): void {
+    const loop = this.#loops.get(sessionId)
+    if (loop === undefined) return
+    if (loop.wakeup !== undefined || loop.crons.size > 0) {
+      this.#logger?.warn(`dsh-claude: /loop in ${sessionId} ended: ${reason}`)
+    }
+    this.#clearLoop(sessionId)
+  }
+
+  /** Whether this process holds a schedule (or a scheduler-fired turn) and so
+   *  must not be reaped as idle: Claude Code's scheduler lives in the process,
+   *  and a killed process never fires what it held. */
+  #holdsSchedule(entry: SupervisorEntry): boolean {
+    return entry.adoption !== undefined
+      || entry.orphanScheduledTurn === true
+      || holdsProcess(this.#loops.get(entry.sessionId))
+  }
+
+  /** Record what a root ScheduleWakeup / CronCreate / CronDelete call left in
+   *  Claude Code's scheduler. Read off the tool result, not the call: the CLI
+   *  clamps and aligns the delay, and a rejected call schedules nothing. */
+  #recordSchedule(entry: SupervisorEntry, active: ActiveTurn | undefined, call: { toolName: string; input: unknown }, output: unknown): void {
+    // A result drained while the session is being torn down must not revive
+    // a schedule the teardown just forgot.
+    if (this.#disposed || entry.state === 'disposed') return
+    const loop = this.#loop(entry.sessionId)
+    if (active !== undefined) active.loopTurn = true
+    if (call.toolName === 'ScheduleWakeup') {
+      const wakeup = scheduledWakeup(call.input, output)
+      if (wakeup === undefined) return
+      if (wakeup === null) {
+        delete loop.wakeup
+        this.#armLoopFallback(entry.sessionId, undefined)
+        return
+      }
+      loop.wakeup = wakeup
+      this.#armLoopFallback(entry.sessionId, wakeup.scheduledFor + LOOP_WAKEUP_GRACE_MS)
+      return
+    }
+    if (call.toolName === 'CronCreate') {
+      const cron = createdCron(call.input, output)
+      if (cron !== undefined) {
+        loop.crons.set(cron.id, { prompt: cron.prompt, recurring: cron.recurring, durable: cron.durable, expiresAt: Date.now() + CRON_LIFETIME_MS })
+      }
+      return
+    }
+    const id = deletedCronId(call.input)
+    if (id !== undefined) loop.crons.delete(id)
+  }
+
+  /** Arm the safety net for a wakeup the CLI owes. It does nothing when the
+   *  CLI fires on time (the scheduled turn clears the wakeup first); it exists
+   *  for a process that died, was evicted, or was replaced in the meantime. */
+  #armLoopFallback(sessionId: string, at: number | undefined): void {
+    const loop = this.#loops.get(sessionId)
+    if (loop === undefined) return
+    if (loop.fallback !== undefined) clearTimeout(loop.fallback)
+    delete loop.fallback
+    if (at === undefined) return
+    const timer = setTimeout(() => { this.#fireLoopFallback(sessionId) }, Math.max(at - Date.now(), 1_000))
+    timer.unref?.()
+    loop.fallback = timer
+  }
+
+  #fireLoopFallback(sessionId: string): void {
+    const loop = this.#loops.get(sessionId)
+    if (loop === undefined) return
+    delete loop.fallback
+    if (loop.wakeup === undefined) return
+    const entry = this.#entries.get(sessionId)
+    if (entry !== undefined && (entry.active !== undefined || entry.adoption !== undefined || entry.orphanScheduledTurn === true)) {
+      // A busy CLI fires a due wakeup once the running turn ends.
+      this.#armLoopFallback(sessionId, Date.now() + LOOP_WAKEUP_GRACE_MS)
+      return
+    }
+    const prompt = resumePrompt(loop)
+    delete loop.wakeup
+    if (prompt === undefined) {
+      this.#logger?.warn(`dsh-claude: /loop wakeup for ${sessionId} was lost and no /loop command is known to restart it`)
+      return
+    }
+    this.#followup(sessionId, prompt, 'restarting a /loop whose wakeup was lost with its process', 'resume')
+  }
+
+  /** A turn Claude Code's scheduler started on its own. With a DSH turn open,
+   *  its output simply joins that turn. Otherwise DSH needs a turn to draw it
+   *  in: ask the agent for one and hold the message stream until it attaches,
+   *  so nothing the CLI emits meanwhile is dropped as turn-less. Control
+   *  traffic (permission prompts, setPermissionMode) is not held: the SDK
+   *  answers it before messages reach this stream. */
+  async #adoptScheduledTurn(entry: SupervisorEntry, message: Extract<NormalizedSdkMessage, { kind: 'scheduled-turn' }>): Promise<void> {
+    const loop = this.#loops.get(entry.sessionId)
+    let wakeup: PendingWakeup | undefined
+    let onlyCronPrompt: string | undefined
+    if (loop !== undefined && message.source === 'loop_wakeup') {
+      wakeup = loop.wakeup
+      if (wakeup !== undefined) {
+        delete loop.wakeup
+        this.#armLoopFallback(entry.sessionId, undefined)
+      }
+    } else if (loop !== undefined) {
+      const crons = [...loop.crons.entries()]
+      if (crons.length === 1) onlyCronPrompt = crons[0]![1].prompt
+      // The CLI deletes a one-shot cron once it fires. The frame does not say
+      // which cron fired, so only an unambiguous one-shot is forgotten here;
+      // anything else ages out with the CLI's own seven-day expiry.
+      if (crons.length === 1 && !crons[0]![1].recurring) loop.crons.delete(crons[0]![0])
+    }
+    if (entry.active !== undefined) {
+      entry.active.loopTurn = true
+      return
+    }
+    if (entry.idleTimer !== undefined) {
+      clearTimeout(entry.idleTimer)
+      entry.idleTimer = undefined
+    }
+    const label = scheduledTurnLabel(wakeup, onlyCronPrompt)
+    const followupId = randomUUID()
+    let settle: (attached: boolean) => void = () => undefined
+    const attached = new Promise<boolean>(resolve => { settle = resolve })
+    const timer = setTimeout(() => { settle(false) }, SCHEDULED_TURN_ADOPTION_TIMEOUT_MS)
+    timer.unref?.()
+    const adoption = { followupId, label, attached, attach: () => { clearTimeout(timer); settle(true) } }
+    entry.adoption = adoption
+    const requested = this.#followup(entry.sessionId, label, `Claude Code ${message.source}`, 'scheduled', followupId)
+    if (requested === undefined) {
+      clearTimeout(timer)
+      settle(false)
+    }
+    const ok = await attached
+    if (entry.adoption === adoption) delete entry.adoption
+    if (!ok && entry.state !== 'disposed') {
+      // The CLI runs the turn regardless; keep its process from being reaped
+      // under it, and re-arm the idle timer once its result arrives.
+      entry.orphanScheduledTurn = true
+      this.#logger?.warn(`dsh-claude: no DSH turn opened for a scheduled Claude Code turn in ${entry.sessionId}; its output is not shown`)
+    }
+  }
+
+  /** A /loop turn ended. If it left nothing scheduled the loop is over —
+   *  unless a usage limit cut it short, which the model could not answer by
+   *  rescheduling: then restart it once the quota resets, at the reset time
+   *  the CLI reported, never a guess. */
+  #afterLoopTurn(entry: SupervisorEntry, active: ActiveTurn, result: Extract<NormalizedSdkMessage, { kind: 'result' }>): void {
+    if (!active.loopTurn) return
+    const loop = this.#loops.get(entry.sessionId)
+    if (loop === undefined || loop.wakeup !== undefined) return
+    const now = Date.now()
+    for (const cron of loop.crons.values()) if (cron.expiresAt > now) return
+    const resetAt = active.rateLimitResetAt
+    const limited = resetAt !== undefined && resetAt > now && (!result.success || result.terminalReason === 'rate_limit')
+    const prompt = limited ? resumePrompt(loop) : undefined
+    if (resetAt === undefined || prompt === undefined) {
+      // A finished loop's command must not restart some later loop.
+      delete loop.command
+      return
+    }
+    loop.wakeup = { scheduledFor: resetAt, prompt, reason: 'usage limit reset', synthetic: true }
+    this.#armLoopFallback(entry.sessionId, resetAt + 60_000)
+    this.#logger?.warn(`dsh-claude: /loop in ${entry.sessionId} hit a usage limit; restarting it after ${new Date(resetAt).toISOString()}`)
+  }
+
+  /** Ask the session's agent for a follow-up turn. Returns the DSH message id
+   *  it was asked with, which `runTurn` later recognises. */
+  #followup(sessionId: string, text: string, reason: string, kind: 'scheduled' | 'resume', id: string = randomUUID()): string | undefined {
+    const agent = this.#resolveAgent(sessionId) ?? this.#entries.get(sessionId)?.ownerAgent
+    if (agent === undefined) {
+      this.#logger?.warn(`dsh-claude: cannot open a turn for ${sessionId} (${reason}): agent unavailable`)
+      return undefined
+    }
+    this.#issuedFollowups.set(id, { sessionId, kind })
+    try {
+      agent.followup({
+        id: id as any,
+        role: 'user' as const,
+        source: { kind: 'user' as const },
+        content: [{ type: 'text' as const, text }],
+      })
+      return id
+    } catch (error) {
+      this.#issuedFollowups.delete(id)
+      this.#logger?.warn(`dsh-claude: cannot open a turn for ${sessionId} (${reason}): ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+  }
+
+  /** The turn for a follow-up whose scheduled turn is already gone (it timed
+   *  out, a user prompt took it over, or its process ended). Nothing is sent:
+   *  sending the label would run the loop body a second time. */
+  #closedTurn(sessionId: string): AsyncIterable<ClaudeTurnStreamEvent> {
+    this.#logger?.warn(`dsh-claude: scheduled Claude Code turn in ${sessionId} was already handled; its follow-up turn closes empty`)
+    const output = new AsyncQueue<ClaudeTurnStreamEvent>()
+    output.push({ type: 'complete', text: '' })
+    output.close()
+    return output
+  }
+
   /** Deliver one more user message into the turn a session is already running.
    *
    *  Claude Code reads a message pushed into its input stream at the next model
@@ -658,140 +883,6 @@ export class ClaudeSupervisor {
    *
    *  `unavailable` means there is no live turn to steer, and the caller must
    *  keep its message for a later turn rather than drop it. */
-  #handleScheduleWakeup(entry: SupervisorEntry, rawInput: unknown): void {
-    const input = rawInput as { delaySeconds?: number; prompt?: string; reason?: string; stop?: boolean } | undefined
-    const sessionId = entry.sessionId
-    const existing = this.#activeWakeups.get(sessionId)
-    if (existing !== undefined) {
-      clearTimeout(existing.timer)
-      this.#activeWakeups.delete(sessionId)
-    }
-    if (input?.stop === true) {
-      this.#logger?.warn(`dsh-claude: cancelled scheduled wakeup for ${sessionId}`)
-      return
-    }
-    const delaySeconds = typeof input?.delaySeconds === 'number' && Number.isFinite(input.delaySeconds)
-      ? Math.min(Math.max(input.delaySeconds, 1), 86_400)
-      : undefined
-    if (delaySeconds === undefined) return
-    const prompt = typeof input?.prompt === 'string' && input.prompt.trim().length > 0
-      ? input.prompt.trim()
-      : '/loop'
-    const reason = typeof input?.reason === 'string' ? input.reason : 'Claude Code scheduled wakeup'
-    const delayMs = delaySeconds * 1_000
-
-    const timer = setTimeout(() => {
-      this.#activeWakeups.delete(sessionId)
-      this.#dispatchWakeup(sessionId, prompt, reason)
-    }, delayMs)
-    timer.unref?.()
-
-    this.#activeWakeups.set(sessionId, { timer, targetTime: Date.now() + delayMs, prompt, reason })
-    this.#logger?.warn(`dsh-claude: scheduled wakeup in ${delaySeconds}s for ${sessionId}: ${reason}`)
-  }
-
-  #handleCronCreate(entry: SupervisorEntry, rawInput: unknown): void {
-    const input = rawInput as { cron?: string; prompt?: string; recurring?: boolean } | undefined
-    const sessionId = entry.sessionId
-    const existing = this.#activeCrons.get(sessionId)
-    if (existing !== undefined) {
-      clearTimeout(existing.timer)
-      this.#activeCrons.delete(sessionId)
-    }
-    const cron = typeof input?.cron === 'string' ? input.cron.trim() : undefined
-    if (cron === undefined) return
-    const prompt = typeof input?.prompt === 'string' && input.prompt.trim().length > 0
-      ? input.prompt.trim()
-      : '/loop'
-    const recurring = input?.recurring !== false
-    const delayMs = parseCronDelayMs(cron)
-
-    const scheduleNext = () => {
-      const timer = setTimeout(() => {
-        if (!recurring) {
-          this.#activeCrons.delete(sessionId)
-        } else {
-          scheduleNext()
-        }
-        this.#dispatchWakeup(sessionId, prompt, `Claude Code cron (${cron})`)
-      }, delayMs)
-      timer.unref?.()
-      this.#activeCrons.set(sessionId, { timer, cron, prompt, recurring })
-    }
-
-    scheduleNext()
-    this.#logger?.warn(`dsh-claude: scheduled cron in ${Math.round(delayMs / 1000)}s (${cron}) for ${sessionId}`)
-  }
-
-  #handleCronDelete(entry: SupervisorEntry): void {
-    const sessionId = entry.sessionId
-    const existing = this.#activeCrons.get(sessionId)
-    if (existing !== undefined) {
-      clearTimeout(existing.timer)
-      this.#activeCrons.delete(sessionId)
-      this.#logger?.warn(`dsh-claude: deleted cron for ${sessionId}`)
-    }
-  }
-
-  #handleRateLimitBackoff(sessionId: string, candidateText: string | undefined): void {
-    const existing = this.#activeCrons.get(sessionId)
-    if (existing === undefined) return
-    const delayMs = findRateLimitResetDelayMs(latestPlanUsage(), candidateText)
-    if (delayMs === undefined) return
-
-    clearTimeout(existing.timer)
-    const minutes = Math.round(delayMs / 60_000)
-    this.#logger?.warn(
-      `dsh-claude: rate limit detected for ${sessionId}; deferring loop wakeup by ${minutes}m until quota resets`,
-    )
-
-    const scheduleNext = () => {
-      const normalDelayMs = parseCronDelayMs(existing.cron)
-      const timer = setTimeout(() => {
-        if (!existing.recurring) {
-          this.#activeCrons.delete(sessionId)
-        } else {
-          scheduleNext()
-        }
-        this.#dispatchWakeup(sessionId, existing.prompt, `Claude Code cron (${existing.cron})`)
-      }, normalDelayMs)
-      timer.unref?.()
-      this.#activeCrons.set(sessionId, { ...existing, timer })
-    }
-
-    const backoffTimer = setTimeout(() => {
-      if (!existing.recurring) {
-        this.#activeCrons.delete(sessionId)
-      } else {
-        scheduleNext()
-      }
-      this.#dispatchWakeup(sessionId, existing.prompt, `Claude Code cron after rate-limit backoff (${existing.cron})`)
-    }, delayMs)
-    backoffTimer.unref?.()
-    this.#activeCrons.set(sessionId, { ...existing, timer: backoffTimer })
-  }
-
-  #dispatchWakeup(sessionId: string, prompt: string, reason: string): void {
-    try {
-      const entry = this.#entries.get(sessionId)
-      const agent = this.#resolveAgent(sessionId) ?? entry?.ownerAgent
-      if (agent === undefined) {
-        this.#logger?.warn(`dsh-claude: cannot dispatch wakeup for ${sessionId}, owner agent unavailable`)
-        return
-      }
-      const message = {
-        id: randomUUID() as any,
-        role: 'user' as const,
-        source: { kind: 'user' as const },
-        content: [{ type: 'text' as const, text: prompt }],
-      }
-      agent.followup(message)
-      this.#logger?.warn(`dsh-claude: dispatched scheduled wakeup for ${sessionId} (${reason})`)
-    } catch (error) {
-      this.#logger?.warn(`dsh-claude: failed to dispatch wakeup for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
-
   deliverSteering(sessionId: string, prompt: SDKUserMessage['message']['content']): ClaudeSteeringOutcome {
     const entry = this.#entries.get(sessionId)
     const active = entry?.active
@@ -933,6 +1024,11 @@ export class ClaudeSupervisor {
     if (signalAborted(request.signal)) throw abortFailure()
     const sessionId = request.agent.id as string
     let entry = this.#entries.get(sessionId)
+    const issued = request.messageId === undefined ? undefined : this.#issuedFollowups.get(request.messageId)
+    if (issued !== undefined) this.#issuedFollowups.delete(request.messageId!)
+    if (issued?.kind === 'scheduled' && (entry?.adoption?.followupId !== request.messageId || entry?.state === 'disposed')) {
+      return this.#closedTurn(sessionId)
+    }
     let createdForRequest: SupervisorEntry | undefined
     const throwIfUnavailable = async (): Promise<void> => {
       const failure = this.#disposed
@@ -1003,10 +1099,13 @@ export class ClaudeSupervisor {
     // session binding keeps the context.
     // A changed model rebuilds the process regardless, so the control request
     // would be spent on a process that is about to be torn down.
-    const switchedLive = mode !== entry.thinkingMode && mode !== undefined && effort !== undefined && model === entry.model
+    // A turn Claude Code's scheduler already started runs on this process as
+    // it is; a model or effort change requested now waits for the next turn.
+    const adopting = entry.adoption !== undefined
+    const switchedLive = !adopting && mode !== entry.thinkingMode && mode !== undefined && effort !== undefined && model === entry.model
       ? await this.#switchEffort(entry, mode, effort)
       : false
-    if (model !== entry.model || (mode !== entry.thinkingMode && !switchedLive)) {
+    if (!adopting && (model !== entry.model || (mode !== entry.thinkingMode && !switchedLive))) {
       this.#entries.delete(sessionId)
       await this.#disposeEntry(entry, 'model or effort switch')
       if (createdForRequest === entry) createdForRequest = undefined
@@ -1116,6 +1215,23 @@ export class ClaudeSupervisor {
       const abortListener = () => { void this.#startInterrupt(entry as SupervisorEntry) }
       active.abortListener = abortListener
       request.signal.addEventListener('abort', abortListener, { once: true })
+    }
+    const text = promptText(request.prompt).trim()
+    const adoption = entry.adoption
+    if (adoption !== undefined) {
+      delete entry.adoption
+      active.loopTurn = true
+      adoption.attach()
+      // The CLI's scheduler already started this turn; DSH only needed a turn
+      // to draw it in, so there is nothing to send.
+      if (request.messageId === adoption.followupId) return active.output
+      // A user prompt reached DSH first and now draws the scheduled turn. The
+      // CLI queues the prompt behind it, so the scheduled turn's result lands
+      // as a progress segment and the prompt's own result ends this turn.
+    }
+    if (isLoopCommand(text)) {
+      this.#loop(sessionId).command = text
+      active.loopTurn = true
     }
     entry.input.push(sdkUserMessage(request.prompt, promptUuid))
     return active.output
@@ -1325,6 +1441,8 @@ export class ClaudeSupervisor {
     const pendingMetadata = this.#cancelMetadataAdmissions(
       admission => admission.sessionId === sessionId,
     )
+    // A disposed or reset session must not be woken by a loop it no longer has.
+    this.#clearLoop(sessionId)
     const entry = this.#entries.get(sessionId)
     if (entry !== undefined) this.#entries.delete(sessionId)
     await Promise.allSettled([
@@ -1344,10 +1462,7 @@ export class ClaudeSupervisor {
     const pendingMetadata = this.#cancelMetadataAdmissions(() => true)
     const entries = [...this.#entries.values()]
     this.#entries.clear()
-    for (const wakeup of this.#activeWakeups.values()) clearTimeout(wakeup.timer)
-    this.#activeWakeups.clear()
-    for (const cron of this.#activeCrons.values()) clearTimeout(cron.timer)
-    this.#activeCrons.clear()
+    for (const sessionId of [...this.#loops.keys()]) this.#clearLoop(sessionId)
     this.#notifyCapacityChange()
     await Promise.allSettled([
       ...pendingAdmissions,
@@ -1359,8 +1474,10 @@ export class ClaudeSupervisor {
   async #makeRoom(): Promise<void> {
     while (this.#entries.size >= this.#config.maxProcesses) {
       const idle = [...this.#entries.values()]
-        .filter(entry => entry.active === undefined && entry.state === 'idle')
-        .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0]
+        .filter(entry => entry.active === undefined && entry.state === 'idle' && entry.adoption === undefined)
+        // A process holding a /loop schedule goes last; its fallback restarts
+        // the loop if it has to go anyway.
+        .sort((left, right) => Number(this.#holdsSchedule(left)) - Number(this.#holdsSchedule(right)) || left.lastUsedAt - right.lastUsedAt)[0]
       if (idle === undefined) throw new ClaudeProcessLimitError(this.#config.maxProcesses)
       this.#entries.delete(idle.sessionId)
       await this.#disposeEntry(idle, 'process limit reached')
@@ -1370,8 +1487,10 @@ export class ClaudeSupervisor {
   async #trimExcessIdle(): Promise<void> {
     while (this.#entries.size > this.#config.maxProcesses) {
       const idle = [...this.#entries.values()]
-        .filter(entry => entry.active === undefined && entry.state === 'idle')
-        .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0]
+        .filter(entry => entry.active === undefined && entry.state === 'idle' && entry.adoption === undefined)
+        // A process holding a /loop schedule goes last; its fallback restarts
+        // the loop if it has to go anyway.
+        .sort((left, right) => Number(this.#holdsSchedule(left)) - Number(this.#holdsSchedule(right)) || left.lastUsedAt - right.lastUsedAt)[0]
       if (idle === undefined) return
       this.#entries.delete(idle.sessionId)
       await this.#disposeEntry(idle, 'process limit lowered')
@@ -1430,13 +1549,17 @@ export class ClaudeSupervisor {
       initialized: false,
       idleTimer: undefined,
       tasks: new Map<string, ClaudeTaskInfo>(),
+      scheduleCalls: new Map(),
       taskBoard: new ClaudeTaskBoard(),
       taskSnapshotAt: 0,
       taskSnapshotTimer: undefined,
       costReading: 0,
     } as SupervisorEntry
 
-    const activeInteraction = () => {
+    const activeInteraction = async () => {
+      // A scheduler-fired turn asks before DSH has attached a turn to it; wait
+      // for the attach instead of answering for a user who was never asked.
+      if (entry.active === undefined && entry.adoption !== undefined) await entry.adoption.attached
       const active = entry.active
       return active === undefined ? undefined : {
         agent: active.agent,
@@ -1583,8 +1706,31 @@ export class ClaudeSupervisor {
       return
     }
 
+    // What the scheduler holds is process state: record it even for a turn
+    // no DSH turn is drawing, or its wakeup would get neither hold nor fallback.
+    if (message.kind === 'tool-call' && message.parentToolUseId === undefined && SCHEDULE_TOOLS.has(message.toolName)) {
+      entry.scheduleCalls.set(message.toolUseId, { toolName: message.toolName, input: message.input })
+    } else if (message.kind === 'tool-result') {
+      const scheduleCall = entry.scheduleCalls.get(message.toolUseId)
+      if (scheduleCall !== undefined) {
+        entry.scheduleCalls.delete(message.toolUseId)
+        if (!message.isError) this.#recordSchedule(entry, entry.active, scheduleCall, message.output)
+      }
+    }
+
+    if (message.kind === 'scheduled-turn') {
+      await this.#adoptScheduledTurn(entry, message)
+      return
+    }
+
     const active = entry.active
-    if (active === undefined) return
+    if (active === undefined) {
+      if (message.kind === 'result' && entry.orphanScheduledTurn === true) {
+        entry.orphanScheduledTurn = false
+        if (entry.state === 'idle') this.#armIdleTimer(entry)
+      }
+      return
+    }
     if (message.kind === 'result') {
       if (entry.claudeSessionId === undefined) {
         throw new ClaudeProtocolError('Claude Code sent a result before initialization')
@@ -1708,15 +1854,6 @@ export class ClaudeSupervisor {
           detail: message.parentToolUseId === undefined ? message.input : undefined,
         })
         // The lead's own list, or the task board every member shares.
-        if (message.toolName === 'ScheduleWakeup' && message.parentToolUseId === undefined) {
-          this.#handleScheduleWakeup(entry, message.input)
-        }
-        if (message.toolName === 'CronCreate' && message.parentToolUseId === undefined) {
-          this.#handleCronCreate(entry, message.input)
-        }
-        if (message.toolName === 'CronDelete' && message.parentToolUseId === undefined) {
-          this.#handleCronDelete(entry)
-        }
         if (message.toolName === 'TodoWrite' && message.parentToolUseId === undefined) {
           const todos = todosFromTodoWrite(message.input)
           if (todos !== undefined) await this.#writeTodos(active, todos)
@@ -1728,7 +1865,7 @@ export class ClaudeSupervisor {
           this.#armAutoBackground(entry, active, message.toolUseId, message.toolName, message.input)
         }
         return
-      case 'tool-result':
+      case 'tool-result': {
         active.openCalls.delete(message.toolUseId)
         this.#disarmAutoBackground(active, message.toolUseId)
         if (entry.taskBoard.result(message.toolUseId, [message.output, message.content], message.isError)) {
@@ -1744,6 +1881,7 @@ export class ClaudeSupervisor {
           isError: message.isError,
         })
         return
+      }
       case 'subagent':
         await this.#appendActivity(active, {
           kind: 'subagent',
@@ -1810,8 +1948,9 @@ export class ClaudeSupervisor {
           ...('summary' in message ? { summary: message.summary } : {}),
           ...('detail' in message ? { detail: message.detail } : {}),
         })
-        if (message.title.toLowerCase().includes('rate limit')) {
-          this.#handleRateLimitBackoff(entry.sessionId, message.title)
+        if (message.kind === 'status') {
+          const resetAt = rateLimitResetAt(message.detail)
+          if (resetAt !== undefined) active.rateLimitResetAt = resetAt
         }
         return
       case 'permission-denied':
@@ -2175,14 +2314,7 @@ export class ClaudeSupervisor {
       active.output.push({ type: 'complete', text: active.text })
       active.output.close()
     }
-    const candidateText = [
-      active.text,
-      result.text,
-      result.failureDetail,
-      ...(result.errors ?? []),
-      result.terminalReason === 'rate_limit' ? 'Claude rate limit is blocking requests' : '',
-    ].filter(Boolean).join('\n')
-    this.#handleRateLimitBackoff(entry.sessionId, candidateText)
+    this.#afterLoopTurn(entry, active, result)
     if (active.signal !== undefined && active.abortListener !== undefined) {
       active.signal.removeEventListener('abort', active.abortListener)
     }
@@ -2422,6 +2554,9 @@ export class ClaudeSupervisor {
     entry.state = 'interrupting'
     active.aborted = true
     active.output.fail(abortFailure())
+    // Stop means stop: the interrupt ends this process, and with it Claude
+    // Code's schedule; the plugin must not bring the loop back either.
+    this.#endLoop(entry.sessionId, 'stopped by the user')
     await this.#upsertTranscriptText(active)
     let interruptError: unknown
     try {
@@ -2474,6 +2609,8 @@ export class ClaudeSupervisor {
       }
       const unknown = active.sawActivity
       entry.state = unknown ? 'outcome-unknown' : 'disconnected'
+      // An ambiguous crash is never replayed automatically, a /loop included.
+      if (unknown) this.#endLoop(entry.sessionId, 'Claude Code exited mid-turn; not restarting automatically')
       // What the process was still holding when it went away is part of the
       // same answer: an unanswered tool call is work that may or may not have
       // landed, and it is what makes the difference between "unknown" and
@@ -2502,8 +2639,13 @@ export class ClaudeSupervisor {
 
   #armIdleTimer(entry: SupervisorEntry): void {
     if (this.#config.idleTimeoutMs <= 0) return
+    if (entry.idleTimer !== undefined) clearTimeout(entry.idleTimer)
     const timer = setTimeout(() => {
       if (entry.active !== undefined || entry.state !== 'idle') return
+      if (this.#holdsSchedule(entry)) {
+        this.#armIdleTimer(entry)
+        return
+      }
       this.#entries.delete(entry.sessionId)
       void this.#disposeEntry(entry, 'idle timeout')
     }, this.#config.idleTimeoutMs)
@@ -2517,6 +2659,16 @@ export class ClaudeSupervisor {
     if (entry.state === 'disposed') return
 
     entry.disposeReason = reason
+    entry.adoption?.attach()
+    // Session crons that are not durable live only in this process.
+    const loop = this.#loops.get(entry.sessionId)
+    if (loop !== undefined) {
+      for (const [id, cron] of loop.crons) {
+        if (cron.durable) continue
+        loop.crons.delete(id)
+        this.#logger?.warn(`dsh-claude: scheduled task ${id} in ${entry.sessionId} ended with its Claude Code process (${reason})`)
+      }
+    }
     if (entry.idleTimer !== undefined) clearTimeout(entry.idleTimer)
     entry.state = 'disposed'
     this.#hostJobs?.abandon(entry.sessionId)

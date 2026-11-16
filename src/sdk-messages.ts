@@ -74,6 +74,15 @@ export type NormalizedSdkMessage =
     kind: 'progress'
     subtype: string
   }
+  | {
+    /** The CLI started a turn its own scheduler queued (a /loop wakeup or a
+     *  CronCreate fire). No DSH prompt asked for it, and its result carries no
+     *  user message uuid, so this frame is the only way to tell it apart. */
+    kind: 'scheduled-turn'
+    commandUuid: string
+    source: 'loop_wakeup' | 'schedule_wakeup'
+    scheduledFor?: number
+  }
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
   | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; failureDetail?: string; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
   | { kind: 'protocol-error'; title: string; detail: unknown }
@@ -514,7 +523,9 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
     // reads these titles from the projection instead.
     const info = record(value.rate_limit_info)
     const status = string(info?.status)
-    const blocking = status !== undefined && status !== 'allowed'
+    // `allowed_warning` means a threshold was crossed (say 75% of the weekly
+    // quota) while requests still go through; only the other states block.
+    const blocking = status !== undefined && status !== 'allowed' && status !== 'allowed_warning'
     return [{
       kind: 'status',
       title: blocking ? 'Claude rate limit is blocking requests' : 'Claude rate limit status changed',
@@ -530,7 +541,15 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
   if (value.type === 'command_lifecycle') {
     // CLI 2.1.259+ reports each queued prompt's queued → running → done
     // transitions. The turn lifecycle already tells the same story, so these
-    // are telemetry too, not an unknown message worth a warning row.
+    // are telemetry too, not an unknown message worth a warning row — except
+    // the start of a turn the CLI's own scheduler fired, which nothing else
+    // announces.
+    const source = string(value.wakeup_source)
+    const commandUuid = string(value.command_uuid)
+    if (value.state === 'started' && commandUuid !== undefined && (source === 'loop_wakeup' || source === 'schedule_wakeup')) {
+      const scheduledFor = finiteNumber(value.scheduled_for)
+      return [{ kind: 'scheduled-turn', commandUuid, source, ...(scheduledFor === undefined ? {} : { scheduledFor }) }]
+    }
     return [{ kind: 'progress', subtype: 'command_lifecycle' }]
   }
   const unknownType = String(value.type)
