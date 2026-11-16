@@ -252,6 +252,9 @@ interface ActiveTurn {
   loopTurn?: boolean
   /** When a `rate_limit_event` rejected this turn, the epoch ms the quota resets. */
   rateLimitResetAt?: number
+  /** Whether this turn sent Claude a prompt of its own. False for a turn that
+   *  only draws a scheduler-fired turn: that turn's result is then its answer. */
+  promptSent?: boolean
   cursor: ClaudeActivityCursor
   /** Last complete text block recorded per subagent call: the CLI re-sends a
    *  message's blocks as each one completes, and one copy is enough. */
@@ -336,6 +339,14 @@ interface SupervisorEntry {
   /** A scheduler-fired turn is running that no DSH turn draws (attaching timed
    *  out or no agent was reachable). The process is busy until its result. */
   orphanScheduledTurn?: boolean
+  /** Scheduler-fired turns that have started and not yet reported a result.
+   *  Their results name no user message, which is the only way to tell them
+   *  from the answer to a prompt this plugin sent. */
+  scheduledTurnsOpen: number
+  /** Uuids of prompts sent to this process whose results have not arrived. A
+   *  result for one that the running DSH turn does not own is a late answer to
+   *  an earlier turn, not a protocol violation. */
+  sentPrompts: Set<string>
   /** Claude's task-tool list (TaskCreate / TaskUpdate), mirrored into the Host to-do dock. */
   taskBoard: ClaudeTaskBoard
   /** Last time a task snapshot was persisted (progress throttling). */
@@ -504,6 +515,9 @@ const SCHEDULE_TOOLS = new Set(['ScheduleWakeup', 'CronCreate', 'CronDelete'])
 /** How long the message stream waits for DSH to open a turn for a turn the
  *  CLI's scheduler started, before letting its output fall through unseen. */
 const SCHEDULED_TURN_ADOPTION_TIMEOUT_MS = 120_000
+
+/** The answer of a follow-up turn whose scheduled run another turn drew. */
+export const SCHEDULED_TURN_ALREADY_SHOWN = '_This scheduled run is shown in the previous turn._'
 
 /** A session's scheduler bookkeeping. It outlives any one process: the
  *  fallback must still fire after the process that held the schedule is gone. */
@@ -821,10 +835,19 @@ export class ClaudeSupervisor {
     timer.unref?.()
     const adoption = { followupId, label, attached, attach: () => { clearTimeout(timer); settle(true) } }
     entry.adoption = adoption
-    const requested = this.#followup(entry.sessionId, label, `Claude Code ${message.source}`, 'scheduled', followupId)
-    if (requested === undefined) {
-      clearTimeout(timer)
-      settle(false)
+    // A user turn already being admitted for this session draws the scheduled
+    // turn itself; asking for a follow-up as well would leave an empty turn
+    // queued behind it.
+    const userTurnPending = this.#turnAdmissions.some(admission => (
+      (admission.request.agent.id as string) === entry.sessionId
+      && (admission.request.messageId === undefined || !this.#issuedFollowups.has(admission.request.messageId))
+    ))
+    if (!userTurnPending) {
+      const requested = this.#followup(entry.sessionId, label, `Claude Code ${message.source}`, 'scheduled', followupId)
+      if (requested === undefined) {
+        clearTimeout(timer)
+        settle(false)
+      }
     }
     const ok = await attached
     if (entry.adoption === adoption) delete entry.adoption
@@ -889,7 +912,7 @@ export class ClaudeSupervisor {
   #closedTurn(sessionId: string): AsyncIterable<ClaudeTurnStreamEvent> {
     this.#logger?.warn(`dsh-claude: scheduled Claude Code turn in ${sessionId} was already handled; its follow-up turn closes empty`)
     const output = new AsyncQueue<ClaudeTurnStreamEvent>()
-    output.push({ type: 'complete', text: '' })
+    output.push({ type: 'complete', text: SCHEDULED_TURN_ALREADY_SHOWN })
     output.close()
     return output
   }
@@ -910,6 +933,8 @@ export class ClaudeSupervisor {
     if (entry === undefined || active === undefined || !this.canSteer(sessionId)) return 'unavailable'
     const uuid = randomUUID()
     active.ownedPromptUuids.add(uuid)
+    active.promptSent = true
+    entry.sentPrompts.add(uuid)
     entry.input.push(sdkUserMessage(prompt, uuid))
     // Drawn where it arrived. This turn's prose settles as one node when the
     // turn ends, so a message recorded on DSH's surface instead would sit above
@@ -1254,6 +1279,8 @@ export class ClaudeSupervisor {
       this.#loop(sessionId).command = text
       active.loopTurn = true
     }
+    active.promptSent = true
+    entry.sentPrompts.add(promptUuid)
     entry.input.push(sdkUserMessage(request.prompt, promptUuid))
     return active.output
   }
@@ -1577,6 +1604,8 @@ export class ClaudeSupervisor {
       idleTimer: undefined,
       tasks: new Map<string, ClaudeTaskInfo>(),
       scheduleCalls: new Map(),
+      scheduledTurnsOpen: 0,
+      sentPrompts: new Set<string>(),
       taskBoard: new ClaudeTaskBoard(),
       taskSnapshotAt: 0,
       taskSnapshotTimer: undefined,
@@ -1755,15 +1784,20 @@ export class ClaudeSupervisor {
     }
 
     if (message.kind === 'scheduled-turn') {
+      entry.scheduledTurnsOpen += 1
       await this.#adoptScheduledTurn(entry, message)
       return
     }
 
     const active = entry.active
     if (active === undefined) {
-      if (message.kind === 'result' && entry.orphanScheduledTurn === true) {
-        entry.orphanScheduledTurn = false
-        if (entry.state === 'idle') this.#armIdleTimer(entry)
+      if (message.kind === 'result') {
+        if (message.userMessageUuid !== undefined) entry.sentPrompts.delete(message.userMessageUuid)
+        else if (entry.scheduledTurnsOpen > 0) entry.scheduledTurnsOpen -= 1
+        if (entry.orphanScheduledTurn === true) {
+          entry.orphanScheduledTurn = false
+          if (entry.state === 'idle') this.#armIdleTimer(entry)
+        }
       }
       return
     }
@@ -1774,6 +1808,18 @@ export class ClaudeSupervisor {
       if (message.sessionId !== entry.claudeSessionId) {
         throw new ClaudeProtocolError(`Claude Code result session ${message.sessionId} does not match ${entry.claudeSessionId}`)
       }
+      const sentEarlier = message.userMessageUuid !== undefined && entry.sentPrompts.delete(message.userMessageUuid)
+      // A result naming no user message, while a scheduler-fired turn is open,
+      // is that turn's. It answers a DSH turn only when the turn sent nothing
+      // of its own; otherwise the turn's own answer is still to come, whatever
+      // the CLI's queue count says (a prompt still in its submit hooks is not
+      // counted as queued).
+      const scheduledResult = message.userMessageUuid === undefined && entry.scheduledTurnsOpen > 0
+      if (scheduledResult) entry.scheduledTurnsOpen -= 1
+      if (scheduledResult && active.promptSent === true && active.phase !== 'waiting-tasks') {
+        await this.#completeProgressSegment(active, message)
+        return
+      }
       if (active.phase === 'waiting-tasks') {
         // The CLI may automatically react to each completed background task and
         // emit a top-level result, correlated or not. Publish that prose as a
@@ -1783,6 +1829,13 @@ export class ClaudeSupervisor {
         return
       }
       if (message.userMessageUuid !== undefined && !active.ownedPromptUuids.has(message.userMessageUuid)) {
+        if (sentEarlier) {
+          // The late answer to a prompt an earlier DSH turn sent. That turn is
+          // over; show what Claude said here and keep waiting for this turn's.
+          this.#logger?.warn(`dsh-claude: absorbed a late result for an earlier prompt (${message.userMessageUuid}) in session ${entry.sessionId}`)
+          await this.#completeProgressSegment(active, message)
+          return
+        }
         if (active.phase === 'follow-up') {
           // The CLI reacts to the last task notification on its own, and a
           // report prompt that lands mid-reaction is folded into that turn
@@ -2124,6 +2177,8 @@ export class ClaudeSupervisor {
       phase: 'updated',
       title: 'Claude Code is reporting background task results',
     })
+    active.promptSent = true
+    entry.sentPrompts.add(active.promptUuid)
     entry.input.push(sdkUserMessage(BACKGROUND_TASK_REPORT_PROMPT, active.promptUuid))
   }
 

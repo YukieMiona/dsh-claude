@@ -7,7 +7,7 @@ import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@an
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AsyncQueue } from '../src/async-queue.ts'
 import { ClaudeSidecarRepository } from '../src/sidecar.ts'
-import { CLAUDE_METADATA_TIMEOUT_MS, ClaudeSupervisor, type ClaudeQueryFactory } from '../src/supervisor.ts'
+import { CLAUDE_METADATA_TIMEOUT_MS, ClaudeSupervisor, SCHEDULED_TURN_ALREADY_SHOWN, type ClaudeQueryFactory } from '../src/supervisor.ts'
 import {
   LOOP_WAKEUP_GRACE_MS,
   holdsProcess,
@@ -259,7 +259,7 @@ describe('Claude Code /loop under the supervisor', () => {
     query.push(result('ran unseen'))
 
     const events = await drain(await h.answer(followup))
-    expect(events).toEqual([{ type: 'complete', text: '' }])
+    expect(events).toEqual([{ type: 'complete', text: SCHEDULED_TURN_ALREADY_SHOWN }])
     expect(query.sentText).toEqual(['/loop check CI'])
     await h.supervisor.dispose()
   })
@@ -276,8 +276,49 @@ describe('Claude Code /loop under the supervisor', () => {
     query.push(result('Sunny.', { user_message_uuid: query.sent[1]!.uuid }))
     expect(await drain(user)).toContainEqual({ type: 'complete', text: 'Sunny.' })
 
-    expect(await drain(await h.answer(followup))).toEqual([{ type: 'complete', text: '' }])
+    expect(await drain(await h.answer(followup))).toEqual([{ type: 'complete', text: SCHEDULED_TURN_ALREADY_SHOWN }])
     expect(query.sentText).toEqual(['/loop check CI', 'what is the weather'])
+    await h.supervisor.dispose()
+  })
+
+  it('never lets a scheduled run\'s result answer a turn that sent its own prompt', async () => {
+    // Seen live: Stop was clicked as a cron fired. The CLI ran the cron first
+    // and reported no queue behind it (the prompt was still in its submit
+    // hooks), so the Stop turn closed on the cron's answer, the real answer
+    // was dropped, and the next turn died on a result it did not recognise.
+    const h = harness()
+    const scheduledFor = Date.now() + 120_000
+    const query = await startLoop(h, scheduledFor)
+    const followup = await fireWakeup(h, query, scheduledFor)
+
+    const stop = await h.supervisor.runTurn({ agent: h.agent, prompt: 'Stop the loop now.', messageId: 'user-stop', model: 'default' })
+    await vi.waitFor(() => { expect(query.sentText).toEqual(['/loop check CI', 'Stop the loop now.']) })
+    query.push(result('The loop ran again.'))
+    await vi.advanceTimersByTimeAsync(50)
+    query.push(result('The loop is stopped.', { user_message_uuid: query.sent[1]!.uuid }))
+    expect(await drain(stop)).toContainEqual({ type: 'complete', text: 'The loop is stopped.' })
+    await drain(await h.answer(followup))
+    expect(h.supervisor.snapshots()).toHaveLength(1)
+    await h.supervisor.dispose()
+  })
+
+  it('absorbs the late answer to an earlier turn\'s prompt instead of ending the process', async () => {
+    const h = harness()
+    const first = await h.supervisor.runTurn({ agent: h.agent, prompt: 'first', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    // The first turn is cut short by a result that names no prompt.
+    query.push(result('unrelated'))
+    await drain(first)
+
+    const second = await h.supervisor.runTurn({ agent: h.agent, prompt: 'second', model: 'default' })
+    await vi.waitFor(() => { expect(query.sent).toHaveLength(2) })
+    query.push(result('answer to first', { user_message_uuid: query.sent[0]!.uuid }))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(h.supervisor.snapshots()).toHaveLength(1)
+    query.push(result('answer to second', { user_message_uuid: query.sent[1]!.uuid }))
+    expect(await drain(second)).toContainEqual({ type: 'complete', text: 'answer to second' })
+    expect(h.warnings.some(warning => warning.includes('late result'))).toBe(true)
     await h.supervisor.dispose()
   })
 
