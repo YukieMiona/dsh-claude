@@ -7,7 +7,7 @@ import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@an
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { AsyncQueue } from '../src/async-queue.ts'
 import { ClaudeSidecarRepository } from '../src/sidecar.ts'
-import { ClaudeSupervisor, type ClaudeQueryFactory } from '../src/supervisor.ts'
+import { CLAUDE_METADATA_TIMEOUT_MS, ClaudeSupervisor, type ClaudeQueryFactory } from '../src/supervisor.ts'
 import {
   LOOP_WAKEUP_GRACE_MS,
   holdsProcess,
@@ -305,6 +305,36 @@ describe('Claude Code /loop under the supervisor', () => {
 
     // Long overdue: the hold lapses and the process is ordinary idle again.
     await vi.advanceTimersByTimeAsync(120_000 + LOOP_WAKEUP_GRACE_MS)
+    expect(h.supervisor.snapshots()).toHaveLength(0)
+    await h.supervisor.dispose()
+  })
+
+  it('keeps a process that holds a schedule when an idle metadata request times out', async () => {
+    const h = harness()
+    const scheduledFor = Date.now() + 600_000
+    const query = await startLoop(h, scheduledFor)
+    query.supportedCommands.mockImplementation(() => new Promise<never>(() => {}))
+
+    const refresh = h.supervisor.supportedCommands(h.agent).catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(CLAUDE_METADATA_TIMEOUT_MS + 1_000)
+    expect(await refresh).toBeInstanceOf(Error)
+    expect(h.supervisor.snapshots()).toHaveLength(1)
+    expect(h.warnings.some(warning => warning.includes('holds a schedule'))).toBe(true)
+    await h.supervisor.dispose()
+  })
+
+  it('still discards an idle process with nothing scheduled when a metadata request times out', async () => {
+    const h = harness()
+    const stream = await h.supervisor.runTurn({ agent: h.agent, prompt: 'hello', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    query.push(result('hi', { user_message_uuid: query.sent[0]?.uuid }))
+    await drain(stream)
+    query.supportedCommands.mockImplementation(() => new Promise<never>(() => {}))
+
+    const refresh = h.supervisor.supportedCommands(h.agent).catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(CLAUDE_METADATA_TIMEOUT_MS + 1_000)
+    await refresh
     expect(h.supervisor.snapshots()).toHaveLength(0)
     await h.supervisor.dispose()
   })

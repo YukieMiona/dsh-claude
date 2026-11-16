@@ -1344,7 +1344,13 @@ export class ClaudeSupervisor {
       // start-up) times out without meaning the process is dead. Only an
       // idle process that stopped answering is thrown away; a live turn's
       // wedge still ends through the composer's own Stop.
-      if (entry.active === undefined) {
+      if (entry.active === undefined && this.#holdsSchedule(entry)) {
+        // A slow answer is not a dead process (the usage read alone has
+        // measured 15 s on a busy host), and this one holds a /loop schedule
+        // that would die with it. Its own idle timeout still applies once
+        // nothing is scheduled.
+        this.#logger?.warn(`dsh-claude: ${label} timed out on session ${entry.sessionId}; keeping the process because it holds a schedule`)
+      } else if (entry.active === undefined) {
         if (this.#entries.get(entry.sessionId) === entry) this.#entries.delete(entry.sessionId)
         await this.#disposeEntry(entry, 'control request timed out')
       } else {
