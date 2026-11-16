@@ -9,7 +9,7 @@ import {
   pluginWrite,
 } from '../src/client/plugin-transport.ts'
 import { ClaudeProjectionStore } from '../src/client/projection.ts'
-import { PLUGIN_GLOBAL_PERMITS, QUEUE_WAIT_BUDGET_MS, clientBudgetMs } from '../src/plugin-budget.ts'
+import { PLUGIN_GLOBAL_PERMITS, PLUGIN_LANE_CAPS, QUEUE_WAIT_BUDGET_MS, clientBudgetMs } from '../src/plugin-budget.ts'
 
 afterEach(() => {
   __resetPluginTransport()
@@ -86,12 +86,14 @@ describe('plugin transport connection budget', () => {
   it('fails a starved request fast, and says which failure it was', async () => {
     const held = neverAnswers()
     __setPluginFetch(held.fetch)
-    void pluginRead('/a', 'git').catch(() => undefined)
-    void pluginRead('/b', 'git').catch(() => undefined)
+    // Fill the read lane with distinct requests that never answer.
+    for (let index = 0; index < PLUGIN_LANE_CAPS.read; index += 1) {
+      void pluginRead(`/held-${index}`, 'git').catch(() => undefined)
+    }
     await new Promise(resolve => setTimeout(resolve, 10))
 
     const started = Date.now()
-    const error = await pluginRead('/c', 'git').catch((reason: unknown) => reason as PluginRequestError)
+    const error = await pluginRead('/starved', 'git').catch((reason: unknown) => reason as PluginRequestError)
     // Fast and named, rather than twenty silent seconds ending in "signal
     // timed out" — the message that told the user nothing.
     expect(error).toBeInstanceOf(PluginRequestError)

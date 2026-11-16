@@ -41,7 +41,7 @@ export function clientBudgetMs(budget: RouteBudget): number {
 
 /** A request that never got a permit fails fast and says so, rather than
  *  spending its whole budget queued behind work it cannot see. */
-export const QUEUE_WAIT_BUDGET_MS = 60_000
+export const QUEUE_WAIT_BUDGET_MS = 4_000
 
 /** Connections this plugin may hold at once, across every lane. */
 export const PLUGIN_GLOBAL_PERMITS = 16
