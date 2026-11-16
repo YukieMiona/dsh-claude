@@ -1109,6 +1109,91 @@ export const repositoryBarLinked: CSSProperties = {
   color: 'var(--dsw-alias-label-secondary)',
 }
 
+export const linkedRepositoriesScrollArea: CSSProperties = {
+  maxHeight: 180,
+  overflowY: 'auto',
+  marginBottom: 6,
+  display: 'flex',
+  flexDirection: 'column',
+  overscrollBehavior: 'contain',
+}
+
+export const repositorySummaryBar: CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  minHeight: 28,
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+  padding: '3px 10px',
+  marginBottom: 6,
+  ...dockSurface,
+  border: '1px dashed var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 14%, transparent))',
+  borderRadius: 8,
+  background: 'color-mix(in srgb, var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1)) 96%, var(--dsw-alias-label-primary) 4%)',
+  color: 'var(--dsw-alias-label-secondary)',
+  font: 'inherit',
+  fontSize: 12,
+  lineHeight: '20px',
+  cursor: 'pointer',
+  textAlign: 'left',
+}
+
+export const repositorySummaryLeft: CSSProperties = {
+  minWidth: 0,
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  overflow: 'hidden',
+}
+
+export const repositorySummaryTitle: CSSProperties = {
+  fontWeight: 600,
+  whiteSpace: 'nowrap',
+  flex: 'none',
+}
+
+export const repositorySummaryPills: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  overflow: 'hidden',
+  flexWrap: 'nowrap',
+}
+
+export const repositorySummaryPill: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  fontSize: 11,
+  lineHeight: '16px',
+  padding: '1px 5px',
+  borderRadius: 4,
+  background: 'color-mix(in srgb, currentColor 10%, transparent)',
+  color: 'var(--dsw-alias-label-primary)',
+  whiteSpace: 'nowrap',
+  textDecoration: 'none',
+}
+
+export const repositorySummaryPillLink: CSSProperties = {
+  cursor: 'pointer',
+  color: 'var(--dsw-static-blue-450, #60a5fa)',
+}
+
+export const repositorySummaryRight: CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+export const repositorySummaryActionText: CSSProperties = {
+  fontSize: 11,
+}
+
 export const repositoryPrIcon: CSSProperties = {
   width: 20,
   height: 20,
@@ -1428,6 +1513,23 @@ export const repositoryAutoFixCss = `
   border-color: var(--dsw-static-blue-450);
   background: var(--dsw-static-blue-450);
   color: var(--dsw-alias-label-on-accent, #fff);
+}
+
+.dshClaudeLinkedScrollArea {
+  scrollbar-width: thin;
+}
+.dshClaudeLinkedSummaryBar:hover {
+  background: color-mix(in srgb, var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1)) 90%, var(--dsw-alias-label-primary) 10%) !important;
+}
+@media (max-width: 640px) {
+  .dshClaudeLinkedScrollArea {
+    max-height: 130px !important;
+  }
+  .dshClaudeLinkedScrollArea [data-dsh-claude-linked-repository] {
+    margin-bottom: 4px !important;
+    padding: 3px 8px !important;
+    font-size: 12px !important;
+  }
 }
 `
 

@@ -4,6 +4,7 @@ import { CLAUDE_DOCTOR_PATH, CLAUDE_GLOBAL_SETTINGS_PATH, CLAUDE_UPDATE_CHECK_PA
 import type { PlanUsageReport, PlanUsageWindow } from '../plan-usage.ts'
 import { DEFAULT_CLAUDE_PROSE_MODE, isClaudeProseMode, type ClaudeProseMode } from '../constants.ts'
 import { applyClaudeMarkdownTheme } from './markdown-theme.ts'
+import { applyLinkedRepositoriesMode, linkedRepositoriesModeOf } from './linked-repositories-mode.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import * as styles from './styles.ts'
 import { connectJira, disconnectJira, loadJiraStatus, type JiraStatus } from './jira-api.ts'
@@ -292,6 +293,7 @@ export const SETTING_COPY: Readonly<Record<string, { label: ClaudeCodeSettingsKe
   permissionMode: { label: 'defaultPermissionMode', hint: 'defaultPermissionModeEffect' },
   renderer: { label: 'renderer', hint: 'rendererEffect' },
   prose: { label: 'prose', hint: 'proseEffect' },
+  linkedRepositories: { label: 'linkedRepositories', hint: 'linkedRepositoriesEffect' },
   worktreeBranchPrefix: { label: 'worktreeBranchPrefix', hint: 'worktreeBranchPrefixEffect' },
   maxProcesses: { label: 'maxProcessesSetting', hint: 'maxProcessesEffect' },
   idleTimeoutMinutes: { label: 'idleTimeoutSetting', hint: 'idleTimeoutEffect' },
@@ -313,6 +315,10 @@ export const SETTING_OPTION_COPY: Readonly<Record<string, ClaudeCodeSettingsKey>
   'renderer:native': 'rendererNative',
   'prose:plain': 'prosePlain',
   'prose:enhanced': 'proseEnhanced',
+  'linkedRepositories:auto': 'linkedRepositoriesAuto',
+  'linkedRepositories:collapsed': 'linkedRepositoriesCollapsed',
+  'linkedRepositories:hidden': 'linkedRepositoriesHidden',
+  'linkedRepositories:expanded': 'linkedRepositoriesExpanded',
 }
 
 export function settingOptionLabel(
@@ -562,6 +568,7 @@ export function ClaudeCodeSettings({ t }: ClaudeCodeSettingsInjected) {
       // initial read as well as the write, so opening the panel re-syncs a
       // stylesheet that boot could not reach.
       applyClaudeMarkdownTheme(proseModeOf(payload.settings))
+      applyLinkedRepositoriesMode(linkedRepositoriesModeOf(payload.settings))
     } catch (cause) {
       setGlobalSettingsError(cardFailure(cause))
     } finally {

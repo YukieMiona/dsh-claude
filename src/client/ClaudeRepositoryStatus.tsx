@@ -13,6 +13,7 @@ import { AUTO_FIX_INTERVAL_MS, autoFixEnabled, autoFixMemory, planAutoFix, remem
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import type { ClaudeClientProjection } from './projection.ts'
 import * as styles from './styles.ts'
+import { useLinkedRepositoriesMode, useIsMobile } from './linked-repositories-mode.ts'
 import { CLAUDE_COMPOSER_BAR_ATTRIBUTE } from './boot-check.ts'
 
 export interface ClaudeRepositoryStatusInjected {
@@ -823,6 +824,115 @@ export function LinkedRepositoryBar({ sessionId, repository, running, t, openDif
   )
 }
 
+
+export function LinkedRepositoriesView({
+  sessionId,
+  repositories,
+  running,
+  t,
+  openDiff,
+  report,
+  submitPrompt,
+}: {
+  sessionId: string
+  repositories: readonly RepositoryStatus[]
+  running: boolean
+  t: ClaudeRepositoryStatusInjected['t']
+  openDiff: (root?: string) => void
+  report: (text: string) => void
+  submitPrompt?: (draft: string, mode?: 'append' | 'idle') => boolean
+}) {
+  const mode = useLinkedRepositoriesMode()
+  const isMobile = useIsMobile()
+  const [userExpanded, setUserExpanded] = useState<boolean | undefined>(undefined)
+
+  if (repositories.length === 0 || mode === 'hidden') return null
+
+  // Auto mode collapses when there are > 1 repositories or when on a mobile/narrow viewport.
+  // When there is only 1 repository on a desktop, it behaves as expanded directly.
+  const shouldCollapseByDefault = mode === 'collapsed' || (mode === 'auto' && (repositories.length > 1 || isMobile))
+  const expanded = userExpanded !== undefined ? userExpanded : !shouldCollapseByDefault
+
+  // If there's only 1 repository and mode is not explicitly 'collapsed', show it directly
+  if (repositories.length === 1 && mode !== 'collapsed') {
+    const item = repositories[0]!
+    return (
+      <LinkedRepositoryBar
+        key={item.root ?? `${item.remote ?? item.cwd}#${item.pullRequest?.number ?? ''}`}
+        sessionId={sessionId}
+        repository={item}
+        running={running}
+        t={t}
+        openDiff={openDiff}
+        report={report}
+        {...(submitPrompt === undefined ? {} : { submitPrompt })}
+      />
+    )
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        style={styles.repositorySummaryBar}
+        className="dshClaudeLinkedSummaryBar"
+        onClick={() => setUserExpanded(!expanded)}
+        aria-expanded={expanded}
+      >
+        <span style={styles.repositorySummaryLeft}>
+          <StatusGlyph label={t('repositoryLinked')} tone="neutral"><LinkIcon /></StatusGlyph>
+          <span style={styles.repositorySummaryTitle}>
+            {t('linkedRepositoriesSummary', { count: repositories.length })}
+          </span>
+          <span style={styles.repositorySummaryPills}>
+            {repositories.map(repo => {
+              const pr = repo.pullRequest
+              if (pr === undefined) {
+                const b = repo.branch ?? repositoryLabel(repo)
+                return <span key={repo.root ?? repo.cwd} style={styles.repositorySummaryPill}>{b}</span>
+              }
+              return (
+                <a
+                  key={repo.root ?? `${repo.remote}#${pr.number}`}
+                  href={pr.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ ...styles.repositorySummaryPill, ...styles.repositorySummaryPillLink }}
+                  onClick={e => e.stopPropagation()}
+                >#{pr.number}</a>
+              )
+            })}
+          </span>
+        </span>
+        <span style={styles.repositorySummaryRight}>
+          <span style={styles.repositorySummaryActionText}>
+            {expanded ? t('linkedRepositoriesCollapse') : t('linkedRepositoriesExpand')}
+          </span>
+          <span style={{ display: 'inline-flex', transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>
+            <IconChevronDownOutlineRegular />
+          </span>
+        </span>
+      </button>
+      {expanded ? (
+        <div style={styles.linkedRepositoriesScrollArea} className="dshClaudeLinkedScrollArea">
+          {repositories.map(item => (
+            <LinkedRepositoryBar
+              key={item.root ?? `${item.remote ?? item.cwd}#${item.pullRequest?.number ?? ''}`}
+              sessionId={sessionId}
+              repository={item}
+              running={running}
+              t={t}
+              openDiff={openDiff}
+              report={report}
+              {...(submitPrompt === undefined ? {} : { submitPrompt })}
+            />
+          ))}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjection, t, openDiff, submitPrompt, deleteWorkspace }: ClaudeRepositoryStatusProps) {
   const blank = useSessions(value => value.byId[sessionId]?.blank === true)
   const running = useSessions(value => value.byId[sessionId]?.running === true)
@@ -835,9 +945,17 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   if (blank || !projection.owned || repository === undefined) return null
   const branch = branchLabel(repository, t)
   const merged = repository.pullRequest?.state === 'merged'
-  const linked = (projection.repositories ?? []).map(item => (
-    <LinkedRepositoryBar key={item.root ?? `${item.remote ?? item.cwd}#${item.pullRequest?.number ?? ''}`} sessionId={sessionId} repository={item} running={running} t={t} openDiff={openDiff} report={report} {...(submitPrompt === undefined ? {} : { submitPrompt })} />
-  ))
+  const linked = (
+    <LinkedRepositoriesView
+      sessionId={sessionId}
+      repositories={projection.repositories ?? []}
+      running={running}
+      t={t}
+      openDiff={openDiff}
+      report={report}
+      {...(submitPrompt === undefined ? {} : { submitPrompt })}
+    />
+  )
   if (repository.status !== 'ready') {
     return (
       <div style={styles.repositoryBarFrame} {...{ [CLAUDE_COMPOSER_BAR_ATTRIBUTE]: '' }}>

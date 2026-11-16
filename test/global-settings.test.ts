@@ -216,6 +216,19 @@ describe('Claude Code global settings registry', () => {
     await expect(updateGlobalSettings({ outputStyle: 'Missing private style' }, { paths })).rejects.toThrow('Invalid value')
   })
 
+  it('stores the linkedRepositories display mode in plugin settings with an auto default', async () => {
+    const paths = await fixture()
+    const initial = await readGlobalSettings({ paths })
+    expect(initial.settings.find(setting => setting.key === 'linkedRepositories')).toMatchObject({
+      kind: 'select', value: 'auto', effect: 'immediate',
+    })
+
+    const updated = await updateGlobalSettings({ linkedRepositories: 'collapsed' }, { paths })
+    expect(updated.settings.find(setting => setting.key === 'linkedRepositories')).toMatchObject({ value: 'collapsed' })
+    expect(JSON.parse(await readFile(paths.pluginSettingsFile, 'utf8'))).toEqual({ linkedRepositories: 'collapsed' })
+    await expect(updateGlobalSettings({ linkedRepositories: 'invalid-mode' }, { paths })).rejects.toThrow('Invalid value')
+  })
+
   it('serializes concurrent changes without producing malformed settings', async () => {
     const paths = await fixture()
     await Promise.all([

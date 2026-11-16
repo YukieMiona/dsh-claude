@@ -22,6 +22,7 @@ import { backgroundToolCall } from './background-task-api.ts'
 import { cachedExists, sessionFileAddress, type FileMentionSource } from './file-mentions.ts'
 import { ClaudeCodeSettings, isGlobalSettingsView, proseModeOf, type ClaudeCodeSettingsInjected } from './ClaudeCodeSettings.tsx'
 import { applyClaudeMarkdownTheme } from './markdown-theme.ts'
+import { applyLinkedRepositoriesMode, linkedRepositoriesModeOf } from './linked-repositories-mode.ts'
 import { pluginRead } from './plugin-transport.ts'
 import { CLAUDE_GLOBAL_SETTINGS_PATH } from '../constants.ts'
 import { ClaudePlanHeaderAction, type ClaudePlanHeaderActionInjected } from './ClaudePlanHeaderAction.tsx'
@@ -143,6 +144,7 @@ export function apply(ctx: Context): void {
     .then(payload => {
       if (!isGlobalSettingsView(payload)) return
       applyClaudeMarkdownTheme(proseModeOf(payload.settings))
+      applyLinkedRepositoriesMode(linkedRepositoriesModeOf(payload.settings))
     })
     .catch(() => {})
   // A carrier that loses a line leaves the projection quietly behind the

@@ -10,10 +10,14 @@ import {
   CLAUDE_GLOBAL_SETTINGS_PATH,
   CLAUDE_RENDER_MODES,
   CLAUDE_PROSE_MODES,
+  CLAUDE_LINKED_REPOSITORIES_MODES,
+  DEFAULT_CLAUDE_LINKED_REPOSITORIES_MODE,
   DEFAULT_CLAUDE_PROSE_MODE,
   DEFAULT_CLAUDE_RENDER_MODE,
+  isClaudeLinkedRepositoriesMode,
   isClaudeProseMode,
   isClaudeRenderMode,
+  type ClaudeLinkedRepositoriesMode,
   type ClaudeRenderMode,
 } from './constants.ts'
 import { registerPluginRoute, type PluginRouteIo } from './http.ts'
@@ -328,6 +332,28 @@ const PROSE: SelectSettingDescriptor = {
   },
 }
 
+
+/** How linked repositories (other checkouts touched by the session) are shown
+ *  above the composer dock. Plugin settings: immediate effect in client UI. */
+const LINKED_REPOSITORIES: SelectSettingDescriptor = {
+  key: 'linkedRepositories',
+  kind: 'select',
+  document: 'plugin',
+  effect: 'immediate',
+  async options() {
+    return CLAUDE_LINKED_REPOSITORIES_MODES.map(value => ({ value, label: value, source: 'built-in' as const }))
+  },
+  read(document) {
+    const value = document.linkedRepositories
+    return isClaudeLinkedRepositoriesMode(value) ? value : DEFAULT_CLAUDE_LINKED_REPOSITORIES_MODE
+  },
+  apply(document, value) {
+    if (!isClaudeLinkedRepositoriesMode(value)) throw new Error('Invalid value for global setting linkedRepositories')
+    if (value === DEFAULT_CLAUDE_LINKED_REPOSITORIES_MODE) delete document.linkedRepositories
+    else document.linkedRepositories = value
+  },
+}
+
 function isBoundedInteger(value: unknown, min: number, max: number): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
 }
@@ -360,7 +386,7 @@ function integerSetting(
 const MAX_PROCESSES = integerSetting('maxProcesses', 1, MAX_PROCESSES_LIMIT, limits => limits.maxProcesses, 'immediate')
 const IDLE_TIMEOUT_MINUTES = integerSetting('idleTimeoutMinutes', 1, MAX_IDLE_TIMEOUT_MINUTES, limits => Math.max(1, Math.round(limits.idleTimeoutMs / 60_000)))
 
-const DESCRIPTORS: readonly SettingDescriptor[] = [OUTPUT_STYLE, PERMISSION_SELECTOR, PERMISSION_MODE, RENDERER, PROSE, WORKTREE_BRANCH_PREFIX, MAX_PROCESSES, IDLE_TIMEOUT_MINUTES]
+const DESCRIPTORS: readonly SettingDescriptor[] = [OUTPUT_STYLE, PERMISSION_SELECTOR, PERMISSION_MODE, RENDERER, PROSE, LINKED_REPOSITORIES, WORKTREE_BRANCH_PREFIX, MAX_PROCESSES, IDLE_TIMEOUT_MINUTES]
 const DESCRIPTOR_BY_KEY = new Map(DESCRIPTORS.map(descriptor => [descriptor.key, descriptor]))
 let pendingWrite: Promise<unknown> = Promise.resolve()
 
@@ -456,6 +482,17 @@ export async function readDefaultPermissionMode(deps: GlobalSettingsDependencies
     return DEFAULT_CLAUDE_PERMISSION_MODE
   }
   return isClaudePermissionMode(document.permissionMode) ? document.permissionMode : DEFAULT_CLAUDE_PERMISSION_MODE
+}
+
+
+export async function readLinkedRepositoriesMode(deps: GlobalSettingsDependencies = {}): Promise<ClaudeLinkedRepositoriesMode> {
+  let document: JsonObject
+  try {
+    document = await readDocument(pathsFor(deps).pluginSettingsFile)
+  } catch {
+    return DEFAULT_CLAUDE_LINKED_REPOSITORIES_MODE
+  }
+  return isClaudeLinkedRepositoriesMode(document.linkedRepositories) ? document.linkedRepositories : DEFAULT_CLAUDE_LINKED_REPOSITORIES_MODE
 }
 
 export async function readWorktreeBranchPrefix(deps: GlobalSettingsDependencies = {}): Promise<string> {

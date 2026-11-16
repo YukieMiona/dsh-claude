@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { composeConflictsPrompt } from '../src/client/pr-feedback-api.ts'
 import { describe, expect, it, vi } from 'vitest'
 import { ClaudeDiffPanel, actionLabel, expandDiffRows, numberDiffLines, parseUnifiedDiff, rangeCommentAnchor, repositoryActionAvailability } from '../src/client/ClaudeDiffPanel.tsx'
-import { ClaudeRepositoryStatus, PullRequestHoverCard, repositorySummary, updateBranchMounted } from '../src/client/ClaudeRepositoryStatus.tsx'
+import { ClaudeRepositoryStatus, LinkedRepositoriesView, PullRequestHoverCard, repositorySummary, updateBranchMounted } from '../src/client/ClaudeRepositoryStatus.tsx'
+import { applyLinkedRepositoriesMode } from '../src/client/linked-repositories-mode.ts'
 import { nextActionToast } from '../src/client/action-toast.tsx'
 import type { ClaudeCodeSettingsKey } from '../src/client/locales.ts'
 import type { ClaudeClientProjection } from '../src/client/projection.ts'
@@ -78,6 +79,10 @@ const copy: Partial<Record<ClaudeCodeSettingsKey, string>> = {
   repositoryState_merged: 'Merged',
   repositoryMergedAgo: '{age} ago',
   repositoryChecks: 'Checks',
+  repositoryLinked: 'Linked repository',
+  linkedRepositoriesSummary: '{count} linked repositories / PRs',
+  linkedRepositoriesExpand: 'Expand',
+  linkedRepositoriesCollapse: 'Collapse',
   repositoryChecks_passing: 'Checks passing',
   repositoryReview: 'Review',
   repositoryReview_approved: 'Approved',
@@ -655,5 +660,84 @@ describe('pull request feedback controls', () => {
     const failing = render({ pullRequest: { ...repository.pullRequest, checks: 'failing' as const } })
     expect(failing).toContain('aria-label="Show failing checks"')
     expect(render({})).not.toContain('aria-label="Show failing checks"')
+  })
+})
+
+describe('linked repositories view', () => {
+  const extraRepo1 = {
+    ...repository,
+    root: '/extra1',
+    branch: 'fix/1',
+    pullRequest: {
+      ...repository.pullRequest,
+      number: 101,
+      title: 'Fix 1',
+      url: 'https://github.com/Mercaso/premier-store-os/pull/101',
+    },
+  }
+  const extraRepo2 = {
+    ...repository,
+    root: '/extra2',
+    branch: 'fix/2',
+    pullRequest: {
+      ...repository.pullRequest,
+      number: 102,
+      title: 'Fix 2',
+      url: 'https://github.com/Mercaso/premier-store-os/pull/102',
+    },
+  }
+
+  it('collapses multiple linked repositories into a summary bar with count and PR numbers in auto mode', () => {
+    applyLinkedRepositoriesMode('auto')
+    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
+      sessionId="session"
+      useSessions={sessionsHook(false)}
+      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1, extraRepo2] })}
+      t={t}
+      openDiff={vi.fn()}
+      submitPrompt={vi.fn()}
+    />)
+
+    expect(markup).toContain('class="dshClaudeLinkedSummaryBar"')
+    expect(markup).toContain('2 linked repositories / PRs')
+    expect(markup).toContain('>#101</a>')
+    expect(markup).toContain('>#102</a>')
+    expect(markup).toContain('Expand')
+    // Not expanded by default in auto mode when multiple
+    expect(markup).not.toContain('class="dshClaudeLinkedScrollArea"')
+  })
+
+  it('renders a single linked repository directly in auto mode', () => {
+    applyLinkedRepositoriesMode('auto')
+    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
+      sessionId="session"
+      useSessions={sessionsHook(false)}
+      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1] })}
+      t={t}
+      openDiff={vi.fn()}
+      submitPrompt={vi.fn()}
+    />)
+
+    expect(markup).not.toContain('class="dshClaudeLinkedSummaryBar"')
+    expect(markup).toContain('data-dsh-claude-linked-repository="/extra1"')
+  })
+
+  it('suppresses linked repositories completely when mode is hidden', () => {
+    applyLinkedRepositoriesMode('hidden')
+    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
+      sessionId="session"
+      useSessions={sessionsHook(false)}
+      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1, extraRepo2] })}
+      t={t}
+      openDiff={vi.fn()}
+      submitPrompt={vi.fn()}
+    />)
+
+    expect(markup).not.toContain('class="dshClaudeLinkedSummaryBar"')
+    expect(markup).not.toContain('data-dsh-claude-linked-repository="')
+    expect(markup).not.toContain('/extra1')
+    expect(markup).not.toContain('/extra2')
+    // Reset back to auto
+    applyLinkedRepositoriesMode('auto')
   })
 })

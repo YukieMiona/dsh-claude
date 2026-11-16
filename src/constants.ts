@@ -104,3 +104,18 @@ export function isClaudeProseMode(value: unknown): value is ClaudeProseMode {
 /** Title of the activity an SDK `api_retry` notice becomes. Shared because the
  *  Client folds a run of them into one row and has only the title to go on. */
 export const API_RETRY_TITLE = 'Claude API retry'
+
+/** How linked repositories (other checkouts touched by the session) are displayed
+ *  above the composer in the repository status bar.
+ *
+ *  'auto' collapses multiple linked repositories or on mobile into a single summary bar;
+ *  'collapsed' always shows the summary bar;
+ *  'hidden' suppresses linked repositories from the dock;
+ *  'expanded' shows every linked repository bar. */
+export type ClaudeLinkedRepositoriesMode = 'auto' | 'collapsed' | 'hidden' | 'expanded'
+export const CLAUDE_LINKED_REPOSITORIES_MODES = ['auto', 'collapsed', 'hidden', 'expanded'] as const
+export const DEFAULT_CLAUDE_LINKED_REPOSITORIES_MODE: ClaudeLinkedRepositoriesMode = 'auto'
+
+export function isClaudeLinkedRepositoriesMode(value: unknown): value is ClaudeLinkedRepositoriesMode {
+  return typeof value === 'string' && (CLAUDE_LINKED_REPOSITORIES_MODES as readonly string[]).includes(value)
+}
