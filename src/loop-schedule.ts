@@ -33,11 +33,33 @@ export interface PendingWakeup {
   synthetic?: true
 }
 
+export interface TrackedCron {
+  prompt: string
+  recurring: boolean
+  durable: boolean
+  expiresAt: number
+  /** The 5-field cron expression, when known. */
+  schedule?: string
+  /** Claude Code's own wording, e.g. "Every 3 minutes". */
+  human?: string
+  /** The first fire time CronCreate reported (epoch ms). */
+  nextFireAt?: number
+  /** When this job last started a turn (epoch ms). */
+  lastFiredAt?: number
+}
+
+/** What the composer's loop indicator shows. */
+export interface ClaudeLoopView {
+  /** A pending dynamic /loop wakeup. */
+  wakeup?: { at: number; reason?: string; prompt?: string }
+  jobs: { id: string; prompt: string; recurring: boolean; schedule?: string; human?: string; nextAt?: number }[]
+}
+
 export interface LoopSchedule {
   wakeup?: PendingWakeup
   /** Session crons by the id CronCreate returned. A non-durable cron lives
    *  only in the process that created it. */
-  crons: Map<string, { prompt: string; recurring: boolean; durable: boolean; expiresAt: number }>
+  crons: Map<string, TrackedCron>
   /** The `/loop …` command the user typed; the only prompt that can restart a
    *  loop in a fresh process, since sentinels mean something only to the
    *  scheduler that armed them. */
@@ -99,13 +121,25 @@ export function scheduledWakeup(input: unknown, output: unknown, now = Date.now(
   return { scheduledFor, prompt, ...(reason === undefined ? {} : { reason }) }
 }
 
-export function createdCron(input: unknown, output: unknown): { id: string; prompt: string; recurring: boolean; durable: boolean } | undefined {
+export function createdCron(input: unknown, output: unknown, now = Date.now()): ({ id: string } & TrackedCron) | undefined {
   const id = text(record(output)?.id)
   const prompt = text(record(input)?.prompt)
   if (id === undefined || prompt === undefined) return undefined
   const recurring = record(output)?.recurring ?? record(input)?.recurring
   const durable = record(output)?.durable ?? record(input)?.durable
-  return { id, prompt, recurring: recurring !== false, durable: durable === true }
+  const schedule = text(record(input)?.cron)
+  const human = text(record(output)?.humanSchedule)
+  const nextFireAt = finite(record(output)?.nextFireAt)
+  return {
+    id,
+    prompt,
+    recurring: recurring !== false,
+    durable: durable === true,
+    expiresAt: now + CRON_LIFETIME_MS,
+    ...(schedule === undefined ? {} : { schedule }),
+    ...(human === undefined ? {} : { human }),
+    ...(nextFireAt === undefined ? {} : { nextFireAt }),
+  }
 }
 
 export function deletedCronId(input: unknown): string | undefined {
@@ -136,7 +170,11 @@ export function syncCrons(schedule: LoopSchedule, reported: unknown, now = Date.
       continue
     }
     const known = schedule.crons.get(id)
-    next.set(id, known ?? { prompt, recurring, durable: false, expiresAt: now + CRON_LIFETIME_MS })
+    const expression = text(record(item)?.schedule)
+    next.set(id, {
+      ...(known ?? { prompt, recurring, durable: false, expiresAt: now + CRON_LIFETIME_MS }),
+      ...(expression === undefined ? {} : { schedule: expression }),
+    })
   }
   schedule.crons = next
 }
@@ -175,4 +213,119 @@ export function rateLimitResetAt(detail: unknown): number | undefined {
   const resetsAt = finite(info.resetsAt)
   // The CLI reports epoch seconds.
   return resetsAt === undefined ? undefined : resetsAt * 1_000
+}
+
+type CronField = (value: number) => boolean
+
+function cronField(source: string, min: number, max: number): CronField | undefined {
+  const allowed = new Set<number>()
+  for (const part of source.split(',')) {
+    const match = /^(\*|\d+(?:-\d+)?)(?:\/(\d+))?$/u.exec(part)
+    if (match === null) return undefined
+    const step = match[2] === undefined ? 1 : Number(match[2])
+    if (step < 1) return undefined
+    let from = min
+    let to = max
+    if (match[1] !== '*') {
+      const [low, high] = match[1]!.split('-').map(Number)
+      from = low!
+      to = high ?? (match[2] === undefined ? low! : max)
+    }
+    if (from < min || to > max || from > to) return undefined
+    for (let value = from; value <= to; value += step) allowed.add(value)
+  }
+  return value => allowed.has(value)
+}
+
+/** A 5-field cron expression as a predicate over local time, or undefined
+ *  when it uses syntax this reader does not know (names, `L`, `#`). */
+function cronPredicate(expression: string): ((date: Date) => boolean) | undefined {
+  const parts = expression.trim().split(/\s+/u)
+  if (parts.length !== 5) return undefined
+  const minute = cronField(parts[0]!, 0, 59)
+  const hour = cronField(parts[1]!, 0, 23)
+  const dayOfMonth = cronField(parts[2]!, 1, 31)
+  const month = cronField(parts[3]!, 1, 12)
+  const dayOfWeek = cronField(parts[4]!.replace(/7/gu, '0'), 0, 6)
+  if (minute === undefined || hour === undefined || dayOfMonth === undefined || month === undefined || dayOfWeek === undefined) return undefined
+  const anyDom = parts[2] === '*'
+  const anyDow = parts[4] === '*'
+  return date => {
+    if (!minute(date.getMinutes()) || !hour(date.getHours()) || !month(date.getMonth() + 1)) return false
+    const dom = dayOfMonth(date.getDate())
+    const dow = dayOfWeek(date.getDay())
+    // Standard cron: with both day fields restricted, either may match.
+    return anyDom || anyDow ? dom && dow : dom || dow
+  }
+}
+
+const MINUTE_MS = 60_000
+/** How far a cron search looks: a week ahead, a day back. */
+const CRON_SEARCH_AHEAD_MINUTES = 8 * 24 * 60
+const CRON_SEARCH_BACK_MINUTES = 24 * 60
+
+/** The first minute strictly after `after` the expression matches (epoch ms). */
+export function nextCronMatch(expression: string, after: number): number | undefined {
+  const matches = cronPredicate(expression)
+  if (matches === undefined) return undefined
+  const start = Math.floor(after / MINUTE_MS) * MINUTE_MS
+  for (let step = 1; step <= CRON_SEARCH_AHEAD_MINUTES; step += 1) {
+    const at = start + step * MINUTE_MS
+    if (matches(new Date(at))) return at
+  }
+  return undefined
+}
+
+function previousCronMatch(expression: string, atOrBefore: number): number | undefined {
+  const matches = cronPredicate(expression)
+  if (matches === undefined) return undefined
+  const start = Math.floor(atOrBefore / MINUTE_MS) * MINUTE_MS
+  for (let step = 0; step <= CRON_SEARCH_BACK_MINUTES; step += 1) {
+    const at = start - step * MINUTE_MS
+    if (matches(new Date(at))) return at
+  }
+  return undefined
+}
+
+/** When a job should next fire. Claude Code shifts each job by a fixed
+ *  offset from its cron minute, so the offset seen on the last fire is
+ *  carried forward; before the first fire, its own stated time is used. */
+function nextJobFire(cron: TrackedCron, now: number): number | undefined {
+  if (cron.nextFireAt !== undefined && cron.nextFireAt > now && cron.lastFiredAt === undefined) return cron.nextFireAt
+  if (cron.schedule === undefined) return undefined
+  const lastMatch = cron.lastFiredAt === undefined ? undefined : previousCronMatch(cron.schedule, cron.lastFiredAt)
+  const offset = lastMatch === undefined || cron.lastFiredAt === undefined ? 0 : cron.lastFiredAt - lastMatch
+  const next = nextCronMatch(cron.schedule, now - offset)
+  return next === undefined ? undefined : next + offset
+}
+
+/** The schedule as the composer's loop indicator shows it, or undefined when
+ *  nothing is scheduled. */
+export function loopView(schedule: LoopSchedule | undefined, now = Date.now()): ClaudeLoopView | undefined {
+  if (schedule === undefined) return undefined
+  const wakeup = schedule.wakeup
+  const jobs: ClaudeLoopView['jobs'] = []
+  for (const [id, cron] of schedule.crons) {
+    if (cron.expiresAt <= now) continue
+    const nextAt = nextJobFire(cron, now)
+    jobs.push({
+      id,
+      prompt: cron.prompt.slice(0, 200),
+      recurring: cron.recurring,
+      ...(cron.schedule === undefined ? {} : { schedule: cron.schedule }),
+      ...(cron.human === undefined ? {} : { human: cron.human }),
+      ...(nextAt === undefined ? {} : { nextAt }),
+    })
+  }
+  if (wakeup === undefined && jobs.length === 0) return undefined
+  return {
+    ...(wakeup === undefined ? {} : {
+      wakeup: {
+        at: wakeup.scheduledFor,
+        ...(wakeup.reason === undefined ? {} : { reason: wakeup.reason.slice(0, 200) }),
+        ...(isLoopSentinel(wakeup.prompt) ? {} : { prompt: wakeup.prompt.slice(0, 200) }),
+      },
+    }),
+    jobs,
+  }
 }

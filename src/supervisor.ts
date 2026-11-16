@@ -34,7 +34,6 @@ import { normalizeSdkMessage, type NormalizedSdkMessage } from './sdk-messages.t
 import { claudeModelRow, claudeModelValue, recordClaudeModels } from './model-catalog.ts'
 import { readPlanUsageFrom } from './plan-usage.ts'
 import {
-  CRON_LIFETIME_MS,
   LOOP_WAKEUP_GRACE_MS,
   createdCron,
   deletedCronId,
@@ -45,7 +44,9 @@ import {
   resumePrompt,
   scheduledTurnLabel,
   scheduledWakeup,
+  loopView,
   syncCrons,
+  type ClaudeLoopView,
   type LoopSchedule,
   type PendingWakeup,
 } from './loop-schedule.ts'
@@ -666,6 +667,11 @@ export class ClaudeSupervisor {
     return loop
   }
 
+  /** What this session has scheduled, for the composer's loop indicator. */
+  loopView(sessionId: string): ClaudeLoopView | undefined {
+    return loopView(this.#loops.get(sessionId))
+  }
+
   #clearLoop(sessionId: string): void {
     const loop = this.#loops.get(sessionId)
     if (loop?.fallback !== undefined) clearTimeout(loop.fallback)
@@ -719,7 +725,8 @@ export class ClaudeSupervisor {
     if (call.toolName === 'CronCreate') {
       const cron = createdCron(call.input, output)
       if (cron !== undefined) {
-        loop.crons.set(cron.id, { prompt: cron.prompt, recurring: cron.recurring, durable: cron.durable, expiresAt: Date.now() + CRON_LIFETIME_MS })
+        const { id, ...tracked } = cron
+        loop.crons.set(id, tracked)
       }
       return
     }
@@ -789,7 +796,10 @@ export class ClaudeSupervisor {
       }
     } else if (loop !== undefined) {
       const crons = [...loop.crons.entries()]
-      if (crons.length === 1) onlyCronPrompt = crons[0]![1].prompt
+      if (crons.length === 1) {
+        onlyCronPrompt = crons[0]![1].prompt
+        crons[0]![1].lastFiredAt = Date.now()
+      }
       // The CLI deletes a one-shot cron once it fires. The frame does not say
       // which cron fired, so only an unambiguous one-shot is forgotten here;
       // anything else ages out with the CLI's own seven-day expiry.

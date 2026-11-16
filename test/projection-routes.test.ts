@@ -153,10 +153,22 @@ describe('Claude sidecar projection route', () => {
     const res = response()
     const pending = ctx.handler(request(multi('session/a')), res)
     await settled()
+    // The unary read above already probed this session, so the carrier's
+    // first snapshot carries both and no correcting meta line follows.
     expect(lines(res)).toEqual([
-      expect.objectContaining({ type: 'snapshot', session: 'session/a' }),
-      expect.objectContaining({ type: 'meta', session: 'session/a', repository: expect.objectContaining({ root: '/a' }), repositories: [expect.objectContaining({ root: '/b' })] }),
+      expect.objectContaining({ type: 'snapshot', session: 'session/a', repository: expect.objectContaining({ root: '/a' }), repositories: [expect.objectContaining({ root: '/b' })] }),
     ])
+
+    // A session nobody probed yet still gets them on a meta line.
+    const fresh = response()
+    const freshPending = ctx.handler(request(multi('session/b')), fresh)
+    await settled()
+    expect(lines(fresh)).toEqual([
+      expect.objectContaining({ type: 'snapshot', session: 'session/b' }),
+      expect.objectContaining({ type: 'meta', session: 'session/b', repository: expect.objectContaining({ root: '/a' }), repositories: [expect.objectContaining({ root: '/b' })] }),
+    ])
+    for (const callback of fresh.closeHandlers) callback()
+    await freshPending
     for (const callback of res.closeHandlers) callback()
     await pending
   })
@@ -361,6 +373,47 @@ describe('Claude sidecar projection route', () => {
     expect(lines(res)[1]).not.toHaveProperty('repository')
     for (const callback of res.closeHandlers) callback()
     await pending
+  })
+
+  it('opens a later carrier with the last probed repository and mode, so a reconnect does not blank the composer', async () => {
+    const ctx = context()
+    const sidecar = {
+      read: async () => ({ schemaVersion: 1 as const, revision: 5, activities: [] }),
+      sequence: () => 0,
+      subscribe: () => () => undefined,
+    } as unknown as ClaudeSidecarRepository
+    registerClaudeProjectionRoute(
+      ctx,
+      sidecar,
+      () => true,
+      () => [],
+      async () => ({ status: 'ready', cwd: '/tmp', root: '/tmp', branch: 'main', detached: false, worktree: false, dirty: false }),
+      () => [],
+      async () => [],
+      async () => ({ mode: 'auto', locked: false }),
+    )
+    const first = response()
+    const firstPending = ctx.handler(request(multi('session')), first)
+    await settled()
+    expect(lines(first)[0]).not.toHaveProperty('repository')
+    for (const callback of first.closeHandlers) callback()
+    await firstPending
+
+    const second = response()
+    const secondPending = ctx.handler(request(multi('session')), second)
+    await settled()
+    // The snapshot already carries both, and the probe that follows agrees, so
+    // no correcting meta line is needed.
+    expect(lines(second)).toEqual([
+      expect.objectContaining({
+        type: 'snapshot',
+        session: 'session',
+        repository: expect.objectContaining({ branch: 'main' }),
+        permissionMode: { mode: 'auto', locked: false },
+      }),
+    ])
+    for (const callback of second.closeHandlers) callback()
+    await secondPending
   })
 
   it('tears the carrier down when the client leaves before the first snapshot resolves', async () => {

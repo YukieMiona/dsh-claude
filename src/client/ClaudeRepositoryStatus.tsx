@@ -15,6 +15,7 @@ import type { ClaudeClientProjection } from './projection.ts'
 import * as styles from './styles.ts'
 import { useLinkedRepositoriesMode, useIsMobile } from './linked-repositories-mode.ts'
 import { CLAUDE_COMPOSER_BAR_ATTRIBUTE } from './boot-check.ts'
+import { ClaudeLoopBar } from './ClaudeLoopBar.tsx'
 
 export interface ClaudeRepositoryStatusInjected {
   t: (key: ClaudeCodeSettingsKey, params?: Record<string, unknown>) => string
@@ -942,7 +943,15 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   // cleaned-up worktree all unmount the button that did the work -- so the
   // completion notice belongs here, not inside them.
   const { toast, report } = useActionToast()
-  if (blank || !projection.owned || repository === undefined) return null
+  if (blank || !projection.owned) return null
+  const loopBar = <ClaudeLoopBar loop={projection.loop} running={running} t={t} {...(submitPrompt === undefined ? {} : { submitPrompt })} />
+  if (repository === undefined) {
+    // A loop is session state, not repository state: it shows even while the
+    // checkout has not been probed yet.
+    return projection.loop === undefined ? null : (
+      <div style={styles.repositoryBarFrame} {...{ [CLAUDE_COMPOSER_BAR_ATTRIBUTE]: '' }}>{loopBar}</div>
+    )
+  }
   const branch = branchLabel(repository, t)
   const merged = repository.pullRequest?.state === 'merged'
   const linked = (
@@ -959,6 +968,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   if (repository.status !== 'ready') {
     return (
       <div style={styles.repositoryBarFrame} {...{ [CLAUDE_COMPOSER_BAR_ATTRIBUTE]: '' }}>
+        {loopBar}
         {linked}
         <div style={styles.repositoryBar}>
           <span style={styles.repositoryPrIcon}><PullRequestIcon /></span>
@@ -971,6 +981,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
     <div style={styles.repositoryBarFrame} {...{ [CLAUDE_COMPOSER_BAR_ATTRIBUTE]: '' }}>
       <style data-dsh-claude-repository-bar-styles>{styles.repositoryAutoFixCss}</style>
       {toast}
+      {loopBar}
       {linked}
       <div style={{ ...styles.repositoryBar, ...(merged ? styles.repositoryBarMerged : {}) }}>
         <span style={{ ...styles.repositoryPrIcon, ...(merged ? styles.repositoryPrIconMerged : {}) }}><PullRequestIcon merged={merged} /></span>

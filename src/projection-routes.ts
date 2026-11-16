@@ -10,6 +10,7 @@ import type { ClaudeCommandView } from './command-bridge.ts'
 import type { RepositoryStatus } from './repository-status.ts'
 import type { ReviewComment } from './review-comments.ts'
 import type { ClaudePermissionModeView, ClaudePermissionSelector } from './permission-mode.ts'
+import type { ClaudeLoopView } from './loop-schedule.ts'
 
 const MAX_SESSION_ID_CHARS = 1_024
 /** Slow-moving metadata refresh and stream heartbeat cadence; deliberately off
@@ -18,6 +19,8 @@ const META_REFRESH_MS = 5_000
 /** The multiplexed carrier's path segment. Session ids are `session-<uuid>`,
  *  so this cannot collide with one. */
 const MULTI_SEGMENT = 'multi'
+/** Sessions whose last probed metadata is kept for a later carrier. */
+const MAX_REMEMBERED_SESSIONS = 64
 
 type ProjectionTarget =
   | { readonly kind: 'snapshot'; readonly sessionId: string }
@@ -59,6 +62,8 @@ interface ProjectionMeta {
   readonly permissionMode?: ClaudePermissionModeView
   /** Which access control Claude sessions draw; absent for sessions this plugin does not own. */
   readonly permissionSelector?: ClaudePermissionSelector
+  /** What Claude Code has scheduled for this session (/loop wakeups, crons). */
+  readonly loop?: ClaudeLoopView
 }
 
 function envelope(projection: ClaudeSidecarProjection, meta: ProjectionMeta): Record<string, unknown> {
@@ -75,6 +80,7 @@ function envelope(projection: ClaudeSidecarProjection, meta: ProjectionMeta): Re
     reviewComments: meta.reviewComments,
     ...(meta.permissionMode === undefined ? {} : { permissionMode: meta.permissionMode }),
     ...(meta.permissionSelector === undefined ? {} : { permissionSelector: meta.permissionSelector }),
+    ...(meta.loop === undefined ? {} : { loop: meta.loop }),
     // Ranges only: the chain anchors behind a rewind are Claude transcript
     // identities and stay on this side of the boundary.
     ...(projection.rewind === undefined ? {} : { rewind: { ranges: projection.rewind.ranges } }),
@@ -106,6 +112,8 @@ export function registerClaudeProjectionRoute(
   /** Calls back once a session's preset switch has settled, so ownership
    *  reaches the composer now rather than on the next sweep. */
   presetSettled: (listener: (sessionId: string) => void) => () => void = () => () => undefined,
+  /** Read from memory, so it rides the first snapshot line and every sweep. */
+  loopForSession: (sessionId: string) => ClaudeLoopView | undefined = () => undefined,
 ): void {
   const info = (message: string): void => {
     ctx.logger?.info?.(message)
@@ -114,28 +122,64 @@ export function registerClaudeProjectionRoute(
   /** Everything the host already knows, without touching the repository. */
   const localMeta = (sessionId: string): ProjectionMeta => {
     const owned = ownsSession(sessionId)
+    const loop = owned ? loopForSession(sessionId) : undefined
     return {
       owned,
       commands: commandsForSession(sessionId),
       reviewComments: owned ? reviewCommentsForSession(sessionId) : [],
       ...(owned ? { permissionSelector: permissionSelector() } : {}),
+      ...(loop === undefined ? {} : { loop }),
+    }
+  }
+
+  /** The last probed metadata per session, kept across carriers.
+   *
+   *  A carrier's first line for a session is a snapshot written before the
+   *  repository probe returns. Sent with only what the host knows locally, it
+   *  told the Client "no repository, no permission mode" on every reconnect,
+   *  and the composer dropped its git bar and mode until the probe's meta line
+   *  landed a moment later. The probe's last answer is the better first guess;
+   *  the probe that follows still corrects it. */
+  const lastProbed = new Map<string, ProjectionMeta>()
+  const rememberProbed = (sessionId: string, meta: ProjectionMeta): void => {
+    lastProbed.delete(sessionId)
+    if (!meta.owned) return
+    lastProbed.set(sessionId, meta)
+    // Insertion-ordered: the coldest session goes first.
+    if (lastProbed.size > MAX_REMEMBERED_SESSIONS) lastProbed.delete(lastProbed.keys().next().value as string)
+  }
+  /** Local metadata, carrying the probed fields from the last answer. */
+  const firstMeta = (sessionId: string): ProjectionMeta => {
+    const meta = localMeta(sessionId)
+    const known = lastProbed.get(sessionId)
+    if (!meta.owned || known === undefined) return meta
+    return {
+      ...meta,
+      ...(known.repository === undefined ? {} : { repository: known.repository }),
+      ...(known.repositories === undefined ? {} : { repositories: known.repositories }),
+      ...(known.permissionMode === undefined ? {} : { permissionMode: known.permissionMode }),
     }
   }
 
   const assembleMeta = async (sessionId: string, activities?: readonly ClaudeActivityEvent[]): Promise<ProjectionMeta> => {
     const meta = localMeta(sessionId)
-    if (!meta.owned) return meta
+    if (!meta.owned) {
+      lastProbed.delete(sessionId)
+      return meta
+    }
     const [repository, repositories, permissionMode] = await Promise.all([
       repositoryForSession(sessionId),
       extraRepositoriesForSession(sessionId, activities ?? (await sidecar.read(sessionId)).activities),
       permissionModeForSession(sessionId),
     ])
-    return {
+    const probed = {
       ...meta,
       ...(repository === undefined ? {} : { repository }),
       ...(repositories.length === 0 ? {} : { repositories }),
       ...(permissionMode === undefined ? {} : { permissionMode }),
     }
+    rememberProbed(sessionId, probed)
+    return probed
   }
 
   const streamMulti = async (res: ServerResponse, io: PluginRouteIo, sessionIds: readonly string[]): Promise<void> => {
@@ -174,6 +218,7 @@ export function registerClaudeProjectionRoute(
         ...(meta.permissionMode === undefined ? {} : { permissionMode: meta.permissionMode }),
         ...(meta.permissionSelector === undefined ? {} : { permissionSelector: meta.permissionSelector }),
         ...(meta.repositories === undefined ? {} : { repositories: meta.repositories }),
+        ...(meta.loop === undefined ? {} : { loop: meta.loop }),
         reviewComments: meta.reviewComments,
       })
     }
@@ -182,7 +227,7 @@ export function registerClaudeProjectionRoute(
       // The repository probe runs a chain of git commands and a `gh pr view`
       // over the network -- seconds, where the transcript is already in
       // memory. It rides a later meta line so the prose paints first.
-      const meta = metas.get(sessionId) ?? localMeta(sessionId)
+      const meta = metas.get(sessionId) ?? firstMeta(sessionId)
       metas.set(sessionId, meta)
       // Where the notification stream stands as of this read, so the first
       // delta after this line has a number to be contiguous with.

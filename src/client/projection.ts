@@ -3,6 +3,7 @@ import type { ClaudeActivityEvent, ClaudeTasksEvent } from '../events.ts'
 import type { ClaudeCommandView } from '../command-bridge.ts'
 import type { RepositoryStatus } from '../repository-status.ts'
 import type { ReviewComment } from '../review-comments.ts'
+import type { ClaudeLoopView } from '../loop-schedule.ts'
 import { CLAUDE_PROJECTION_PATH, isClaudeRenderMode } from '../constants.ts'
 import { MAX_MULTIPLEX_SESSIONS } from '../plugin-budget.ts'
 import { MAX_REWIND_RANGES, type ClaudeRewindRange } from '../rewind.ts'
@@ -30,6 +31,8 @@ export interface ClaudeClientProjection {
   /** Which access control to draw: this plugin's selector, or the Host's own.
    *  Absent until the first snapshot, when neither is drawn by this plugin. */
   readonly permissionSelector?: ClaudePermissionSelector
+  /** What Claude Code has scheduled for this session (/loop wakeups, crons). */
+  readonly loop?: ClaudeLoopView
   /** Client-derived per-step activity slices with stable identities for
    *  untouched steps, so streaming re-renders only the active step. */
   readonly byStep?: ReadonlyMap<string, readonly ClaudeActivityEvent[]>
@@ -68,6 +71,7 @@ const MAX_REVIEW_COMMENTS = 50
 /** Matches the server's cap on probed checkouts. */
 const MAX_REPOSITORIES = 8
 const MAX_REVIEW_COMMENT_CHARS = 2_000
+const MAX_LOOP_JOBS = 64
 const MAX_TRANSCRIPT_CHARS = 64_000
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -208,6 +212,19 @@ export function parseClaudeClientProjection(value: unknown): ClaudeClientProject
       throw new Error('invalid Claude permission mode projection')
     }
   }
+  if (input.loop !== undefined) {
+    const loop = record(input.loop)
+    const wakeup = loop?.wakeup === undefined ? undefined : record(loop.wakeup)
+    const text = (value: unknown): boolean => value === undefined || (typeof value === 'string' && value.length <= MAX_REPOSITORY_TEXT_CHARS)
+    const time = (value: unknown): boolean => value === undefined || (typeof value === 'number' && Number.isFinite(value))
+    if (loop === undefined || !Array.isArray(loop.jobs) || loop.jobs.length > MAX_LOOP_JOBS
+      || (loop.wakeup !== undefined && (wakeup === undefined || typeof wakeup.at !== 'number' || !Number.isFinite(wakeup.at) || !text(wakeup.reason) || !text(wakeup.prompt)))
+      || loop.jobs.some(item => {
+        const job = record(item)
+        return job === undefined || typeof job.id !== 'string' || job.id.length > 128 || typeof job.prompt !== 'string' || job.prompt.length > MAX_REPOSITORY_TEXT_CHARS
+          || typeof job.recurring !== 'boolean' || !text(job.schedule) || !text(job.human) || !time(job.nextAt)
+      })) throw new Error('invalid Claude loop projection')
+  }
   if (input.rewind !== undefined) {
     const ranges = record(input.rewind)?.ranges
     if (!Array.isArray(ranges) || ranges.length > MAX_REWIND_RANGES) throw new Error('invalid Claude rewind projection')
@@ -289,6 +306,7 @@ export function createClaudeProjectionSource(
   let rewind: ClaudeClientProjection['rewind']
   let permissionMode: ClaudePermissionModeView | undefined
   let permissionSelector: ClaudePermissionSelector | undefined
+  let loop: ClaudeLoopView | undefined
   const byStep = new Map<string, ClaudeActivityEvent[]>()
   const stepOrder: { turn: number; step: number; key: string }[] = []
   /** Streaming prose still being revealed: full arrived text plus shown chars. */
@@ -374,6 +392,7 @@ export function createClaudeProjectionSource(
       ...(rewind === undefined ? {} : { rewind }),
       ...(permissionMode === undefined ? {} : { permissionMode }),
       ...(permissionSelector === undefined ? {} : { permissionSelector }),
+      ...(loop === undefined ? {} : { loop }),
       byStep: new Map(byStep),
     }
     for (const listener of [...listeners]) listener()
@@ -495,6 +514,7 @@ export function createClaudeProjectionSource(
           rewind = next.rewind
           permissionMode = next.permissionMode
           permissionSelector = next.permissionSelector
+          loop = next.loop
           reset(next.activities)
           break
         }
@@ -533,7 +553,9 @@ export function createClaudeProjectionSource(
             ...(event.reviewComments === undefined ? {} : { reviewComments: event.reviewComments }),
             ...(event.permissionMode === undefined ? {} : { permissionMode: event.permissionMode }),
             ...(event.permissionSelector === undefined ? {} : { permissionSelector: event.permissionSelector }),
+            ...(event.loop === undefined ? {} : { loop: event.loop }),
           })
+          loop = event.loop as ClaudeLoopView | undefined
           owned = event.owned as boolean
           commands = event.commands as readonly ClaudeCommandView[]
           repository = event.repository as RepositoryStatus | undefined

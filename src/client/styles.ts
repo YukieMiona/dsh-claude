@@ -1370,6 +1370,76 @@ export const repositoryBranch: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
+export const loopBar: CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  minHeight: 30,
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '4px 12px',
+  marginBottom: 6,
+  ...dockSurface,
+  color: 'var(--dsw-alias-label-secondary)',
+  font: 'inherit',
+  fontSize: 13,
+  lineHeight: '20px',
+}
+
+export const loopBarIcon: CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  color: 'var(--dsw-static-blue-450, #60a5fa)',
+}
+
+export const loopBarTitle: CSSProperties = {
+  flex: 'none',
+  fontWeight: 600,
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+export const loopBarLabel: CSSProperties = {
+  minWidth: 0,
+  flex: '0 1 auto',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
+export const loopBarMore: CSSProperties = {
+  flex: 'none',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+export const loopBarTiming: CSSProperties = {
+  flex: 'none',
+  marginLeft: 'auto',
+  fontVariantNumeric: 'tabular-nums',
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+export const loopBarActions: CSSProperties = {
+  flex: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+}
+
+export const loopBarButton: CSSProperties = {
+  font: 'inherit',
+  fontSize: 12,
+  lineHeight: '18px',
+  padding: '1px 8px',
+  borderRadius: 6,
+  border: '1px solid var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 18%, transparent))',
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-primary)',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+
 export const repositoryWorktree: CSSProperties = {
   flex: 'none',
   color: 'var(--dsw-alias-label-tertiary)',

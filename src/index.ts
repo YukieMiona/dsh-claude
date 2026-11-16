@@ -728,6 +728,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         }
         check()
       })
-    })
+    }, sessionId => supervisor.loopView(sessionId))
   })
 }
