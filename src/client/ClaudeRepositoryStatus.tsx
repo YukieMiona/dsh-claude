@@ -15,7 +15,8 @@ import type { ClaudeClientProjection } from './projection.ts'
 import * as styles from './styles.ts'
 import { useLinkedRepositoriesMode, useIsMobile } from './linked-repositories-mode.ts'
 import { CLAUDE_COMPOSER_BAR_ATTRIBUTE } from './boot-check.ts'
-import { ClaudeLoopBar, LoopCountdown } from './ClaudeLoopBar.tsx'
+import { ClaudeGoalBar, ClaudeLoopBar, GoalChip, LoopCountdown } from './ClaudeLoopBar.tsx'
+import { ClaudeSendLater, SendLaterChip, type ScheduledSendItem } from './ClaudeSendLater.tsx'
 
 export interface ClaudeRepositoryStatusInjected {
   t: (key: ClaudeCodeSettingsKey, params?: Record<string, unknown>) => string
@@ -882,7 +883,13 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   const mode = useLinkedRepositoriesMode()
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined)
   const loop = projection.loop
-  if (blank || !projection.owned || (repository === undefined && loop === undefined)) return null
+  // The route answers with the new list at once; the projection catches up on
+  // its next sweep, and from then on it is the one to believe again.
+  const projected = loop?.sends
+  const projectedKey = JSON.stringify(projected ?? [])
+  const [localSends, setLocalSends] = useState<{ sends: ScheduledSendItem[]; over: string } | undefined>(undefined)
+  const sends = localSends !== undefined && localSends.over === projectedKey ? localSends.sends : (projected ?? [])
+  if (blank || !projection.owned || (repository === undefined && loop === undefined && sends.length === 0)) return null
   const narrow = compact ?? isMobile
   const others = mode === 'hidden' ? [] : (projection.repositories ?? [])
   const open = userOpen ?? mode === 'expanded'
@@ -942,7 +949,15 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
               ))}
             </>
           )}
-          {loop === undefined ? null : (
+          {loop?.goal === undefined ? null : (
+            <>
+              <div style={styles.dockSection} className="dshClaudeDockSection">{t('goalLabel')}</div>
+              <ClaudeGoalBar goal={loop.goal} t={t} {...(submitPrompt === undefined ? {} : { submitPrompt })} />
+            </>
+          )}
+          <div style={styles.dockSection} className="dshClaudeDockSection">{t('sendLaterLabel')}</div>
+          <ClaudeSendLater sessionId={sessionId} sends={sends} t={t} onChange={next => { setLocalSends({ sends: next, over: projectedKey }) }} />
+          {loop === undefined || (loop.wakeup === undefined && loop.jobs.length === 0) ? null : (
             <>
               <div style={styles.dockSection} className="dshClaudeDockSection">{t('loopBarLabel')}</div>
               <ClaudeLoopBar loop={loop} running={running} t={t} {...(submitPrompt === undefined ? {} : { submitPrompt })} />
@@ -981,6 +996,8 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
           {others.length > shown.length ? <span style={styles.dockMore}>+{others.length - shown.length}</span> : null}
         </span>
         <span style={styles.dockRight}>
+          <GoalChip loop={loop} t={t} />
+          <SendLaterChip sends={sends} t={t} />
           <LoopCountdown loop={loop} t={t} />
           <span style={{ display: 'inline-flex', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>
             <IconChevronDownOutlineRegular />

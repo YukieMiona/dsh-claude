@@ -17,6 +17,11 @@ export type NormalizedSdkMessage =
     kind: 'command-ended'
     commandUuid: string
   }
+  | {
+    /** A Stop hook refused to let Claude stop and sent it back to work; with a
+     *  `/goal` set, that is one more round toward the goal. */
+    kind: 'stop-refused'
+  }
   | { kind: 'text-delta'; text: string; parentToolUseId?: string }
   | { kind: 'assistant-text'; text: string; parentToolUseId?: string }
   | { kind: 'thinking'; text: string; phase: 'updated' | 'completed'; parentToolUseId?: string }
@@ -217,6 +222,10 @@ function normalizeUser(message: Record<string, unknown>): NormalizedSdkMessage[]
   const normalized: NormalizedSdkMessage[] = []
   for (const item of content) {
     const block = record(item)
+    if (block?.type === 'text' && parentToolUseId === undefined && typeof block.text === 'string' && block.text.startsWith('Stop hook feedback:')) {
+      normalized.push({ kind: 'stop-refused' })
+      continue
+    }
     if (block?.type !== 'tool_result') continue
     const toolUseId = string(block.tool_use_id)
     if (toolUseId === undefined) continue

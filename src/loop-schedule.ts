@@ -53,6 +53,28 @@ export interface ClaudeLoopView {
   /** A pending dynamic /loop wakeup. */
   wakeup?: { at: number; reason?: string; prompt?: string }
   jobs: { id: string; prompt: string; recurring: boolean; schedule?: string; human?: string; nextAt?: number }[]
+  /** A `/goal` condition Claude Code is still holding the session to. */
+  goal?: ClaudeGoalView
+  /** Messages the user asked the Host to send later. */
+  sends?: { id: string; text: string; at: number; repeatMs?: number; waiting?: boolean }[]
+}
+
+export interface ClaudeGoalView {
+  condition: string
+  setAt: number
+  /** How many times Claude tried to stop and was sent back to work. */
+  rounds: number
+}
+
+const GOAL_CLEAR_WORDS = new Set(['clear', 'stop', 'off', 'reset', 'none', 'cancel'])
+
+/** What a typed `/goal …` does: sets a condition, clears it, or (bare) only asks. */
+export function goalCommand(prompt: string): { kind: 'set'; condition: string } | { kind: 'clear' } | undefined {
+  const match = /^\/goal(?:\s+([\s\S]+))?$/u.exec(prompt.trim())
+  const argument = match?.[1]?.trim()
+  if (argument === undefined || argument.length === 0) return undefined
+  if (GOAL_CLEAR_WORDS.has(argument.toLowerCase())) return { kind: 'clear' }
+  return { kind: 'set', condition: argument.slice(0, 400) }
 }
 
 export interface LoopSchedule {

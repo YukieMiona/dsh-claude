@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ClaudeLoopView } from '../loop-schedule.ts'
+import type { ClaudeGoalView, ClaudeLoopView } from '../loop-schedule.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import * as styles from './styles.ts'
 import { useIsMobile } from './linked-repositories-mode.ts'
@@ -88,6 +88,60 @@ function LoopIcon() {
       <path d="M13 8a5 5 0 0 1-8.6 3.5M3 8a5 5 0 0 1 8.6-3.5" />
       <path d="M11.5 2v2.7H8.8M4.5 14v-2.7h2.7" />
     </svg>
+  )
+}
+
+function GoalIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.5" />
+      <circle cx="8" cy="8" r="2" />
+    </svg>
+  )
+}
+
+/** Typed for the user when they clear the goal; Claude Code handles it at once, mid-turn too. */
+export const CLEAR_GOAL_PROMPT = '/goal clear'
+
+export function goalTiming(goal: ClaudeGoalView, now: number, t: Translate): string {
+  const elapsed = t('goalElapsed', { time: countdown(Math.max(0, now - goal.setAt)) })
+  return goal.rounds > 0 ? `${t('goalRounds', { count: goal.rounds })} · ${elapsed}` : elapsed
+}
+
+/** The active goal as a chip for the dock's one line. */
+export function GoalChip({ loop, t }: { loop: ClaudeLoopView | undefined; t: Translate }) {
+  const goal = loop?.goal
+  if (goal === undefined) return null
+  return (
+    <span style={styles.dockLoop} data-dsh-claude-goal-chip="">
+      <span style={styles.loopBarIcon}><GoalIcon /></span>
+      <span style={styles.loopBarTiming}>{goal.rounds > 0 ? `${t('goalLabel')} ×${goal.rounds}` : t('goalLabel')}</span>
+    </span>
+  )
+}
+
+/** The goal the session is held to, how long it has run, and a way out. */
+export function ClaudeGoalBar({ goal, t, submitPrompt }: {
+  goal: ClaudeGoalView
+  t: Translate
+  submitPrompt?: (draft: string, mode?: 'append' | 'idle') => boolean
+}) {
+  const now = useNow(true)
+  const narrow = useIsMobile()
+  return (
+    <div style={styles.loopBar} data-dsh-claude-goal-bar="">
+      <span style={styles.loopBarIcon}><GoalIcon /></span>
+      {narrow ? null : <span style={styles.loopBarTitle}>{t('goalLabel')}</span>}
+      <Tooltip label={goal.condition} side="top" delayMs={250} maxWidth={420}>
+        <span style={styles.loopBarLabel}>{goal.condition}</span>
+      </Tooltip>
+      <span style={styles.loopBarTiming} aria-live="off">{goalTiming(goal, now, t)}</span>
+      {submitPrompt === undefined ? null : (
+        <span style={styles.loopBarActions}>
+          <button type="button" style={styles.loopBarButton} onClick={() => { submitPrompt(CLEAR_GOAL_PROMPT) }}>{t('goalClear')}</button>
+        </span>
+      )}
+    </div>
   )
 }
 

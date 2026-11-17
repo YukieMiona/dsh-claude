@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { ClaudeLoopBar, STOP_LOOP_PROMPT, countdown, loopItems, loopTiming } from '../src/client/ClaudeLoopBar.tsx'
+import { CLEAR_GOAL_PROMPT, ClaudeGoalBar, GoalChip, goalTiming, ClaudeLoopBar, STOP_LOOP_PROMPT, countdown, loopItems, loopTiming } from '../src/client/ClaudeLoopBar.tsx'
 import { en, type ClaudeCodeSettingsKey } from '../src/client/locales.ts'
 import { loopView, nextCronMatch, type LoopSchedule } from '../src/loop-schedule.ts'
 import { parseClaudeClientProjection } from '../src/client/projection.ts'
@@ -68,5 +68,23 @@ describe('loop bar', () => {
     const base = { schemaVersion: 1, revision: 0, owned: true, commands: [], activities: [] }
     expect(parseClaudeClientProjection({ ...base, loop: { wakeup: { at: 1 }, jobs: [{ id: 'c1', prompt: 'p', recurring: true, nextAt: 2 }] } }).loop?.jobs).toHaveLength(1)
     expect(() => parseClaudeClientProjection({ ...base, loop: { jobs: [{ id: 'c1' }] } })).toThrow('invalid Claude loop projection')
+  })
+})
+
+describe('goal indicator', () => {
+  const goal = { condition: 'all tests pass', setAt: 1_000, rounds: 2 }
+
+  it('shows the condition, the rounds and a way to clear it', () => {
+    const markup = renderToStaticMarkup(<ClaudeGoalBar goal={goal} t={t} submitPrompt={() => true} />)
+    expect(markup).toContain('all tests pass')
+    expect(markup).toContain('Clear goal')
+    expect(goalTiming(goal, 66_000, t)).toBe('2 rounds · running 1:05')
+    expect(goalTiming({ ...goal, rounds: 0 }, 66_000, t)).toBe('running 1:05')
+    expect(CLEAR_GOAL_PROMPT).toBe('/goal clear')
+  })
+
+  it('draws a chip on the dock line only while a goal is set', () => {
+    expect(renderToStaticMarkup(<GoalChip loop={{ jobs: [], goal }} t={t} />)).toContain('Goal ×2')
+    expect(renderToStaticMarkup(<GoalChip loop={{ jobs: [] }} t={t} />)).toBe('')
   })
 })

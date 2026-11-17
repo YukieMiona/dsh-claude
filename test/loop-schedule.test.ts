@@ -383,6 +383,43 @@ describe('Claude Code /loop under the supervisor', () => {
     await h.supervisor.dispose()
   })
 
+  it('shows a /goal while Claude Code holds the session to it, and drops it when the turn is allowed to end', async () => {
+    const h = harness()
+    const turn = await h.supervisor.runTurn({ agent: h.agent, prompt: '/goal all tests pass', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    await vi.waitFor(() => { expect(query.sent).toHaveLength(1) })
+    expect(h.supervisor.loopView('loop-session')).toMatchObject({ jobs: [], goal: { condition: 'all tests pass', rounds: 0 } })
+    query.push({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Stop hook feedback:\n[all tests pass]: two still fail' }] } } as SDKMessage)
+    await vi.waitFor(() => { expect(h.supervisor.loopView('loop-session')?.goal?.rounds).toBe(1) })
+    query.push(result('done', { user_message_uuid: query.sent[0]!.uuid }))
+    await drain(turn)
+    expect(h.supervisor.loopView('loop-session')).toBeUndefined()
+    await h.supervisor.dispose()
+  })
+
+  it('drops the goal when the user clears it, and ignores a bare /goal', async () => {
+    const h = harness()
+    const turn = await h.supervisor.runTurn({ agent: h.agent, prompt: '/goal ship it', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    await vi.waitFor(() => { expect(query.sent).toHaveLength(1) })
+    query.push(result('interrupted', { subtype: 'error_during_execution', is_error: true, user_message_uuid: query.sent[0]!.uuid }))
+    await drain(turn).catch(() => undefined)
+    expect(h.supervisor.loopView('loop-session')?.goal?.condition).toBe('ship it')
+    const status = await h.supervisor.runTurn({ agent: h.agent, prompt: '/goal', model: 'default' })
+    await vi.waitFor(() => { expect(query.sent).toHaveLength(2) })
+    expect(h.supervisor.loopView('loop-session')?.goal?.condition).toBe('ship it')
+    query.push(result('interrupted', { subtype: 'error_during_execution', is_error: true, user_message_uuid: query.sent[1]!.uuid }))
+    await drain(status).catch(() => undefined)
+    const clear = await h.supervisor.runTurn({ agent: h.agent, prompt: '/goal clear', model: 'default' })
+    await vi.waitFor(() => { expect(query.sent).toHaveLength(3) })
+    expect(h.supervisor.loopView('loop-session')).toBeUndefined()
+    query.push(result('Goal cleared', { user_message_uuid: query.sent[2]!.uuid }))
+    await drain(clear)
+    await h.supervisor.dispose()
+  })
+
   it('defers a model switch requested while a scheduled turn is being attached', async () => {
     const h = harness()
     const scheduledFor = Date.now() + 120_000

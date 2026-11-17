@@ -94,6 +94,10 @@ Cleanup removes only installer-written content and refuses to delete user-modifi
 - **Turn accounting** — Closes each turn the plugin transcript drew with the footer DSH gives only its own messages: tokens, cache hit rate, wall time, time to first token, and cumulative cost. The timings are measured as the turn runs, because activity records carry no clock of their own.
 - **Managed process lifecycle** — Keeps one live Claude process per active session, serializes turns, evicts idle processes, queues user turns FIFO when every process slot is busy, converges safely after the limit is lowered, and handles Stop, cancellation, restart, and process-tree cleanup.
 - **Scheduled loops** — `/loop` and other Claude Code scheduled turns fire on Claude Code's own schedule and each appears as its own DSH turn. The process holding a schedule is kept alive, and a loop whose process was lost, or that hit a usage limit, is restarted from the original `/loop` command. Loops end when the Host restarts.
+- **Goals** — while a `/goal` holds the session, the composer dock shows the condition, how many times Claude was sent back to work, and a button that clears it.
+- **Send later** — the opened dock has a form that schedules a message for this session: once after a delay or at a chosen time, or repeating hourly or daily. Pending messages are kept on disk, survive a Host restart, and are sent as ordinary user messages; one that falls due while the session has no live agent goes out when the session is next opened.
+- **Long commands** — a blocking Bash call is moved to the background after 5 minutes (`foregroundBashBackgroundMs` in the plugin config; `0` never moves it).
+- **Restarting the Host** — `scripts/restart-dsh-when-idle.sh` waits until no Claude turn is running before it restarts the DSH service, because a restart aborts every open turn.
 - **Bilingual interface** — Ships every user-facing string in both English and Chinese.
 
 ### 3.2 Repository, worktrees, and pull requests

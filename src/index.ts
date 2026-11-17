@@ -1,5 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { dirname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import type {} from '@deepseek-ai/dsh-attachment'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -53,6 +56,7 @@ import { withElectronNodeRunner } from './windows-job-runner.ts'
 import { detectWindowsSystemProxy, withSystemProxy, type ProxyEnv } from './system-proxy.ts'
 import { normalizePlanUsage, probePlanUsage, recordPlanUsage } from './plan-usage.ts'
 import { registerPlanUsageRoute } from './plan-usage-routes.ts'
+import { ScheduledSendStore, registerScheduledSendRoute } from './scheduled-sends.ts'
 import { ClaudeHostJobs } from './host-jobs.ts'
 import { createPresetModelSync, type ModelSelection } from './preset-model-sync.ts'
 import { readDefaultPermissionMode, readPermissionSelector, readRenderMode, readSupervisorLimitOverrides, readWorktreeBranchPrefix, registerClaudeGlobalSettingsRoute } from './global-settings.ts'
@@ -70,6 +74,8 @@ export interface Config {
   model?: string
   idleTimeoutMs?: number
   maxProcesses?: number
+  /** How long a blocking Bash call runs before it is moved to the background; 0 never moves it. */
+  foregroundBashBackgroundMs?: number
 }
 
 export const Config: z<Config> = z.object({
@@ -77,6 +83,7 @@ export const Config: z<Config> = z.object({
   model: z.string().default('default'),
   idleTimeoutMs: z.number().min(1_000).max(2_147_483_647).default(30 * 60 * 1_000),
   maxProcesses: z.number().step(1).min(1).default(4),
+  foregroundBashBackgroundMs: z.number().min(0).max(2_147_483_647).default(5 * 60 * 1_000),
 })
 
 const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (preset route not mounted?)'
@@ -248,6 +255,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const supervisorConfig = {
     executablePath: '',
     defaultModel: config.model ?? 'default',
+    ...(config.foregroundBashBackgroundMs === undefined ? {} : { foregroundBashBackgroundMs: config.foregroundBashBackgroundMs }),
     ...defaultLimits,
   }
   // Settings overrides win over the plugin config; the supervisor reads the
@@ -561,6 +569,53 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       }
     }, 'dsh-claude: worktree reconciliation')
   })
+  const scheduledSends = new ScheduledSendStore({
+    file: dshHomePath('plugins', 'dsh-claude', 'scheduled-sends.json'),
+    logger: { warn: message => { ctx.logger.warn(message) } },
+    deliver: (sessionId, text) => {
+      const agent = ctx.agents.get(sessionId as never)
+      if (agent === undefined) return 'unavailable'
+      agent.followup({
+        id: randomUUID() as never,
+        role: 'user' as const,
+        source: { kind: 'user' as const },
+        content: [{ type: 'text' as const, text }],
+      })
+      return 'sent'
+    },
+  })
+  ctx.effect(() => {
+    void scheduledSends.load().then(() => { scheduledSends.start() })
+    return () => { void scheduledSends.dispose() }
+  }, 'dsh-claude: scheduled sends')
+  // Whether a Claude turn is running, in a file a restart script can read
+  // without the web session's cookie: restarting DSH aborts every open turn.
+  ctx.effect(() => {
+    const file = dshHomePath('plugins', 'dsh-claude', 'activity.json')
+    let last = ''
+    let lastWrite = 0
+    const write = (running: number, stopped = false): void => {
+      const key = `${running}:${stopped}`
+      const now = Date.now()
+      if (key === last && now - lastWrite < 20_000) return
+      last = key
+      lastWrite = now
+      try {
+        mkdirSync(dirname(file), { recursive: true })
+        writeFileSync(file, JSON.stringify({ pid: process.pid, running, stopped, updatedAt: now }))
+      } catch { /* a status file must never disturb a turn */ }
+    }
+    const sample = (): void => {
+      write(supervisor.snapshots().filter(item => item.state === 'running' || item.state === 'interrupting').length)
+    }
+    sample()
+    const timer = setInterval(sample, 2_000)
+    timer.unref?.()
+    return () => {
+      clearInterval(timer)
+      write(0, true)
+    }
+  }, 'dsh-claude: activity file')
   ctx.effect(() => () => reviewComments.dispose(), 'dsh-claude: review comments store')
   ctx.effect(() => () => supervisor.dispose(), 'dsh-claude: process supervisor')
   ctx.effect(() => () => repositoryStatus.dispose(), 'dsh-claude: repository status cache')
@@ -728,6 +783,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         }
         check()
       })
-    }, sessionId => supervisor.loopView(sessionId))
+    }, sessionId => {
+      const view = supervisor.loopView(sessionId)
+      const sends = scheduledSends.list(sessionId)
+      return sends.length === 0 ? view : { ...(view ?? { jobs: [] }), sends }
+    })
+    registerScheduledSendRoute(webCtx, scheduledSends, ownsClaudeSession)
   })
 }

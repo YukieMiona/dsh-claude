@@ -47,6 +47,8 @@ import {
   loopView,
   syncCrons,
   type ClaudeLoopView,
+  type ClaudeGoalView,
+  goalCommand,
   type LoopSchedule,
   type PendingWakeup,
 } from './loop-schedule.ts'
@@ -66,8 +68,10 @@ export const CLAUDE_INTERRUPT_TIMEOUT_MS = 5_000
 /** Control requests must settle; a wedged one must not clog the metadata chain. */
 export const CLAUDE_METADATA_TIMEOUT_MS = 15_000
 /** A blocking Bash call that runs this long is moved to the background on its
- *  own, where the Host job list can show and stop it. */
-export const CLAUDE_FOREGROUND_BASH_BACKGROUND_MS = 60_000
+ *  own, where the Host job list can show and stop it. One minute caught
+ *  ordinary test and build runs, and Claude Code then told the model the user
+ *  had moved them, which the user had not. */
+export const CLAUDE_FOREGROUND_BASH_BACKGROUND_MS = 5 * 60_000
 /** Bound on steered messages one turn may own, so a misbehaving caller cannot
  *  grow the ownership set without limit. */
 export const MAX_STEERED_PROMPTS_PER_TURN = 16
@@ -533,6 +537,9 @@ export class ClaudeSupervisor {
   readonly #entries = new Map<string, SupervisorEntry>()
   readonly #interruptions = new Map<string, Promise<void>>()
   readonly #loops = new Map<string, LoopState>()
+  /** The `/goal` each session is being held to, as far as the prompts and
+   *  results show: Claude Code reports no goal state of its own over the SDK. */
+  readonly #goals = new Map<string, ClaudeGoalView>()
   /** Follow-up turns the supervisor asked an agent for, by DSH message id. */
   readonly #issuedFollowups = new Map<string, { sessionId: string; kind: 'scheduled' | 'resume' }>()
   readonly #runtime: Pick<SubprocessRuntime, 'spawn' | 'resolveExecutable'>
@@ -689,7 +696,10 @@ export class ClaudeSupervisor {
 
   /** What this session has scheduled, for the composer's loop indicator. */
   loopView(sessionId: string): ClaudeLoopView | undefined {
-    return loopView(this.#loops.get(sessionId))
+    const view = loopView(this.#loops.get(sessionId))
+    const goal = this.#goals.get(sessionId)
+    if (goal === undefined) return view
+    return { ...(view ?? { jobs: [] }), goal: { ...goal } }
   }
 
   #clearLoop(sessionId: string): void {
@@ -938,6 +948,9 @@ export class ClaudeSupervisor {
     const active = entry?.active
     if (entry === undefined || active === undefined || !this.canSteer(sessionId)) return 'unavailable'
     const uuid = randomUUID()
+    const goal = goalCommand(promptText(prompt))
+    if (goal?.kind === 'set') this.#goals.set(sessionId, { condition: goal.condition, setAt: Date.now(), rounds: 0 })
+    else if (goal?.kind === 'clear') this.#goals.delete(sessionId)
     active.ownedPromptUuids.add(uuid)
     active.promptSent = true
     entry.sentPrompts.add(uuid)
@@ -1285,6 +1298,9 @@ export class ClaudeSupervisor {
       this.#loop(sessionId).command = text
       active.loopTurn = true
     }
+    const goal = goalCommand(text)
+    if (goal?.kind === 'set') this.#goals.set(sessionId, { condition: goal.condition, setAt: Date.now(), rounds: 0 })
+    else if (goal?.kind === 'clear') this.#goals.delete(sessionId)
     active.promptSent = true
     entry.sentPrompts.add(promptUuid)
     entry.input.push(sdkUserMessage(request.prompt, promptUuid))
@@ -1793,6 +1809,14 @@ export class ClaudeSupervisor {
 
     // The safety net for the rule above: if this turn's prompt finished and
     // its answer was never named, the turn ends on the result it was shown.
+    if (message.kind === 'stop-refused') {
+      const goal = this.#goals.get(entry.sessionId)
+      if (goal !== undefined) goal.rounds += 1
+      return
+    }
+    // Claude Code lets a turn end in success only once the goal's hook lets it
+    // stop, so a successful answer to a prompt means the goal is met or given up.
+    if (message.kind === 'result' && message.success && message.userMessageUuid !== undefined) this.#goals.delete(entry.sessionId)
     if (message.kind === 'command-ended') {
       const open = entry.active
       if (open !== undefined && open.unattributedResult !== undefined && open.ownedPromptUuids.has(message.commandUuid) && open.phase === 'primary') {

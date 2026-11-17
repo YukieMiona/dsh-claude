@@ -1517,6 +1517,41 @@ export const loopBar: CSSProperties = {
   lineHeight: '20px',
 }
 
+export const sendLaterForm: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 6,
+  padding: '4px 12px 6px',
+  fontSize: 13,
+}
+
+export const sendLaterInput: CSSProperties = {
+  flex: '1 1 180px',
+  minWidth: 0,
+  font: 'inherit',
+  fontSize: 13,
+  lineHeight: '20px',
+  padding: '2px 8px',
+  borderRadius: 6,
+  border: '1px solid var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 18%, transparent))',
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-primary)',
+}
+
+export const sendLaterSelect: CSSProperties = {
+  flex: 'none',
+  maxWidth: '100%',
+  font: 'inherit',
+  fontSize: 12,
+  lineHeight: '20px',
+  padding: '2px 4px',
+  borderRadius: 6,
+  border: '1px solid var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 18%, transparent))',
+  background: 'var(--dsw-alias-bg-base, transparent)',
+  color: 'var(--dsw-alias-label-primary)',
+}
+
 export const loopBarIcon: CSSProperties = {
   flex: 'none',
   display: 'inline-flex',
@@ -1717,6 +1752,11 @@ export const repositoryAutoFixCss = `
 
 .dshClaudeDockPanel {
   scrollbar-width: thin;
+}
+/* The panel is a column with a height limit: left to shrink, its rows are
+   squeezed below their content and draw over each other once they wrap. */
+.dshClaudeDockPanel > * {
+  flex: none;
 }
 .dshClaudeDockPanel > div:not(.dshClaudeDockSection) {
   border: 0 !important;

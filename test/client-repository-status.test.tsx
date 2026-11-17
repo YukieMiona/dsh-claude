@@ -201,8 +201,8 @@ describe('Claude repository status UI', () => {
     expect(statusMarkup).not.toContain('Mercaso/premier-store-os</span>')
     expect(statusMarkup).toContain('margin:0 auto')
     expect(statusMarkup).not.toContain('max-width:524px')
-    // The diff button, the merge menu, and the dock line that opens the panel.
-    expect(statusMarkup.match(/<button/g)).toHaveLength(3)
+    // The diff button, the merge menu, the send-later form's submit, and the dock line that opens the panel.
+    expect(statusMarkup.match(/<button/g)).toHaveLength(4)
     expect(statusMarkup).toContain('aria-label="View working tree diff"')
     expect(statusMarkup).toContain('aria-label="Open merge options"')
     expect(statusMarkup).toContain('>Merge<')
@@ -747,7 +747,7 @@ describe('linked repositories view', () => {
     expect(markup).toContain('.dshClaudeDockPanel &gt; div:not(.dshClaudeDockSection)')
     expect(markup).toContain('border: 0 !important')
     expect(markup).toContain('box-shadow: none !important')
-    expect(markup.match(/class="dshClaudeDockSection"/g)).toHaveLength(2)
+    expect(markup.match(/class="dshClaudeDockSection"/g)).toHaveLength(3)
     // A merged row is marked so the card can tint it without an edge.
     expect(markup.match(/data-dsh-claude-merged=""/g)).toHaveLength(1)
   })
