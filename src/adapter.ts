@@ -418,8 +418,12 @@ export class ClaudeCodeAdapter extends LlmAdapter {
       if (text.length === 0) return
       const settled = text
       text = ''
+      // No text-delta: the prose is settled, so a delta would be stamped now
+      // and read by the Host as the turn's first token, which made its output
+      // speed tokens over a few milliseconds (100 000 tok/s and more). The
+      // Host assembles the block from block-end alone, and a step with no
+      // token delta is left out of its speed figures instead.
       yield { type: 'block-start', index: blockIndex, blockType: 'text' }
-      yield { type: 'text-delta', index: blockIndex, text: settled }
       yield { type: 'block-end', index: blockIndex, block: { type: 'text', text: settled } }
       blockIndex += 1
     }
@@ -446,7 +450,6 @@ export class ClaudeCodeAdapter extends LlmAdapter {
           // model interleaves the two.
           yield* flushText()
           yield { type: 'block-start', index: blockIndex, blockType: 'reasoning' }
-          yield { type: 'reasoning-delta', index: blockIndex, text: event.text }
           yield { type: 'block-end', index: blockIndex, block: { type: 'reasoning', text: event.text } }
           blockIndex += 1
           continue

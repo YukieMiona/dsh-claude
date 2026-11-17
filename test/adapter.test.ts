@@ -243,6 +243,21 @@ describe('direct prompt resolution', () => {
 })
 
 describe('DSH stream mapping', () => {
+  it('sends settled prose without a text delta, so the Host does not time it as a first token', async () => {
+    // Seen live: DSH showed 106 913 tok/s, because a delta stamped as the
+    // turn ended was read as its first token.
+    const adapter = new ClaudeCodeAdapter(supervisorEvents([
+      { type: 'text-delta', text: 'Do' },
+      { type: 'text-delta', text: 'ne.' },
+      { type: 'answer', text: 'Done.' },
+      { type: 'complete', text: 'Done.' },
+    ]), { currentInitiator: () => agent, get: () => agent }, attachmentStore(), claudePreset)
+    const chunks = []
+    for await (const chunk of adapter.stream(options())) chunks.push(chunk)
+    expect(chunks.some(chunk => chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')).toBe(false)
+    expect(chunks).toContainEqual({ type: 'block-end', index: 0, block: { type: 'text', text: 'Done.' } })
+  })
+
   it('exposes the Desktop prepareCall contract and dispatches through the prepared stream', async () => {
     const { supervisor, calls } = capturingSupervisor()
     const adapter = new ClaudeCodeAdapter(supervisor, {
@@ -309,7 +324,6 @@ describe('DSH stream mapping', () => {
     for await (const chunk of adapter.stream(options())) chunks.push(chunk)
     expect(chunks).toEqual([
       { type: 'block-start', index: 0, blockType: 'text' },
-      { type: 'text-delta', index: 0, text: 'Done: renamed it.' },
       { type: 'block-end', index: 0, block: { type: 'text', text: 'Done: renamed it.' } },
       { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } },
       { type: 'finish', reason: { kind: 'stop' } },
@@ -598,7 +612,6 @@ describe('DSH stream mapping under the native renderer', () => {
     for await (const chunk of adapter.stream(options())) chunks.push(chunk)
     expect(chunks).toEqual([
       { type: 'block-start', index: 0, blockType: 'text' },
-      { type: 'text-delta', index: 0, text: 'hello' },
       { type: 'block-end', index: 0, block: { type: 'text', text: 'hello' } },
       { type: 'usage', usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 1 } },
       { type: 'finish', reason: { kind: 'stop' } },
@@ -631,10 +644,8 @@ describe('DSH stream mapping under the native renderer', () => {
     for await (const chunk of adapter.stream(options())) chunks.push(chunk)
     expect(chunks).toEqual([
       { type: 'block-start', index: 0, blockType: 'reasoning' },
-      { type: 'reasoning-delta', index: 0, text: 'Weighing the options.' },
       { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'Weighing the options.' } },
       { type: 'block-start', index: 1, blockType: 'text' },
-      { type: 'text-delta', index: 1, text: 'Here is the plan.' },
       { type: 'block-end', index: 1, block: { type: 'text', text: 'Here is the plan.' } },
       { type: 'finish', reason: { kind: 'stop' } },
     ])
@@ -648,7 +659,6 @@ describe('DSH stream mapping under the native renderer', () => {
     for await (const chunk of adapter.stream(options())) chunks.push(chunk)
     expect(chunks).toEqual([
       { type: 'block-start', index: 0, blockType: 'text' },
-      { type: 'text-delta', index: 0, text: 'partial' },
       { type: 'block-end', index: 0, block: { type: 'text', text: 'partial' } },
       { type: 'finish', reason: { kind: 'aborted', failure: { code: 'aborted', message: 'Claude Code turn aborted' } } },
     ])
