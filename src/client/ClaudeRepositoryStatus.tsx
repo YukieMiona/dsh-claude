@@ -28,6 +28,8 @@ export interface ClaudeRepositoryStatusInjected {
 }
 
 export interface ClaudeRepositoryStatusProps extends ClaudeRepositoryStatusInjected {
+  /** Test seam: draw the narrow-screen dock regardless of the viewport. */
+  compact?: boolean
   useClaudeProjection: SnapshotSelectorHook<ClaudeClientProjection>
   useSessions: SnapshotSelectorHook<{ readonly byId: Readonly<Record<string, { readonly blank: boolean; readonly running?: boolean } | undefined>> }>
   sessionId: string
@@ -834,6 +836,7 @@ export function LinkedRepositoriesView({
   openDiff,
   report,
   submitPrompt,
+  rowsOnly,
 }: {
   sessionId: string
   repositories: readonly RepositoryStatus[]
@@ -842,12 +845,32 @@ export function LinkedRepositoriesView({
   openDiff: (root?: string) => void
   report: (text: string) => void
   submitPrompt?: (draft: string, mode?: 'append' | 'idle') => boolean
+  /** Rows only, no summary bar of its own: the compact dock already summarised them. */
+  rowsOnly?: boolean
 }) {
   const mode = useLinkedRepositoriesMode()
   const isMobile = useIsMobile()
   const [userExpanded, setUserExpanded] = useState<boolean | undefined>(undefined)
 
   if (repositories.length === 0 || mode === 'hidden') return null
+  if (rowsOnly === true) {
+    return (
+      <div style={styles.linkedRepositoriesScrollArea} className="dshClaudeLinkedScrollArea">
+        {repositories.map(item => (
+          <LinkedRepositoryBar
+            key={item.root ?? `${item.remote ?? item.cwd}#${item.pullRequest?.number ?? ''}`}
+            sessionId={sessionId}
+            repository={item}
+            running={running}
+            t={t}
+            openDiff={openDiff}
+            report={report}
+            {...(submitPrompt === undefined ? {} : { submitPrompt })}
+          />
+        ))}
+      </div>
+    )
+  }
 
   // Auto mode collapses when there are > 1 repositories or when on a mobile/narrow viewport.
   // When there is only 1 repository on a desktop, it behaves as expanded directly.
@@ -934,7 +957,7 @@ export function LinkedRepositoriesView({
   )
 }
 
-export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjection, t, openDiff, submitPrompt, deleteWorkspace }: ClaudeRepositoryStatusProps) {
+export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjection, t, openDiff, submitPrompt, deleteWorkspace, compact }: ClaudeRepositoryStatusProps) {
   const blank = useSessions(value => value.byId[sessionId]?.blank === true)
   const running = useSessions(value => value.byId[sessionId]?.running === true)
   const projection = useClaudeProjection(value => value)
@@ -943,6 +966,9 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   // cleaned-up worktree all unmount the button that did the work -- so the
   // completion notice belongs here, not inside them.
   const { toast, report } = useActionToast()
+  const isMobile = useIsMobile()
+  const linkedMode = useLinkedRepositoriesMode()
+  const [dockOpen, setDockOpen] = useState(false)
   if (blank || !projection.owned) return null
   const loopBar = <ClaudeLoopBar loop={projection.loop} running={running} t={t} {...(submitPrompt === undefined ? {} : { submitPrompt })} />
   if (repository === undefined) {
@@ -977,12 +1003,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
       </div>
     )
   }
-  return (
-    <div style={styles.repositoryBarFrame} {...{ [CLAUDE_COMPOSER_BAR_ATTRIBUTE]: '' }}>
-      <style data-dsh-claude-repository-bar-styles>{styles.repositoryAutoFixCss}</style>
-      {toast}
-      {loopBar}
-      {linked}
+  const ownBar = (
       <div style={{ ...styles.repositoryBar, ...(merged ? styles.repositoryBarMerged : {}) }}>
         <span style={{ ...styles.repositoryPrIcon, ...(merged ? styles.repositoryPrIconMerged : {}) }}><PullRequestIcon merged={merged} /></span>
         <PullRequestLink repository={repository} t={t} />
@@ -997,6 +1018,63 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
         {repository.worktree === true ? <span style={styles.repositoryWorktree}>{t('repositoryWorktree')}</span> : null}
         <RepositoryControls sessionId={sessionId} repository={repository} running={running} t={t} report={report} openDiff={() => openDiff()} {...(submitPrompt === undefined ? {} : { submitPrompt })} {...(deleteWorkspace === undefined ? {} : { deleteWorkspace })} />
       </div>
+  )
+  const others = linkedMode === 'hidden' ? [] : (projection.repositories ?? [])
+  // A narrow screen has room for one line above the composer. With other
+  // checkouts in play, the session's own bar and theirs fold into a single
+  // summary of all of them; tapping it opens the full rows.
+  if ((compact ?? isMobile) && others.length > 0 && linkedMode !== 'expanded') {
+    return (
+      <div style={styles.repositoryBarFrame} {...{ [CLAUDE_COMPOSER_BAR_ATTRIBUTE]: '' }} data-dsh-claude-compact-dock="">
+        <style data-dsh-claude-repository-bar-styles>{styles.repositoryAutoFixCss}</style>
+        {toast}
+        {loopBar}
+        {dockOpen ? (
+          <LinkedRepositoriesView
+            sessionId={sessionId}
+            repositories={others}
+            running={running}
+            t={t}
+            openDiff={openDiff}
+            report={report}
+            rowsOnly
+            {...(submitPrompt === undefined ? {} : { submitPrompt })}
+          />
+        ) : null}
+        {dockOpen ? ownBar : null}
+        <button
+          type="button"
+          style={styles.repositorySummaryBar}
+          className="dshClaudeLinkedSummaryBar"
+          aria-expanded={dockOpen}
+          onClick={() => { setDockOpen(open => !open) }}
+        >
+          <span style={styles.repositorySummaryLeft}>
+            <span style={{ ...styles.repositoryPrIcon, ...(merged ? styles.repositoryPrIconMerged : {}) }}><PullRequestIcon merged={merged} /></span>
+            {repository.remote === undefined ? null : <span style={styles.repositorySummaryTitle}>{repositoryName(repository.remote)}</span>}
+            <span style={styles.repositorySummaryPill}>{repository.pullRequest === undefined ? branch : `#${repository.pullRequest.number}`}</span>
+            <span style={styles.repositorySummaryPills}>
+              {others.map(item => (
+                <span key={item.root ?? `${item.remote ?? item.cwd}#${item.pullRequest?.number ?? ''}`} style={styles.repositorySummaryPill}>
+                  {item.pullRequest === undefined ? (item.branch ?? repositoryLabel(item)) : `#${item.pullRequest.number}`}
+                </span>
+              ))}
+            </span>
+          </span>
+          <span style={{ display: 'inline-flex', transform: dockOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>
+            <IconChevronDownOutlineRegular />
+          </span>
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div style={styles.repositoryBarFrame} {...{ [CLAUDE_COMPOSER_BAR_ATTRIBUTE]: '' }}>
+      <style data-dsh-claude-repository-bar-styles>{styles.repositoryAutoFixCss}</style>
+      {toast}
+      {loopBar}
+      {linked}
+      {ownBar}
     </div>
   )
 }

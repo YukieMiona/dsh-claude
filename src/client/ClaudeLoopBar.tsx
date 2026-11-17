@@ -3,6 +3,7 @@ import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ClaudeLoopView } from '../loop-schedule.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import * as styles from './styles.ts'
+import { useIsMobile } from './linked-repositories-mode.ts'
 
 type Translate = (key: ClaudeCodeSettingsKey, values?: Record<string, string | number>) => string
 
@@ -100,6 +101,7 @@ export function ClaudeLoopBar({ loop, running, t, submitPrompt }: {
 }) {
   const items = loop === undefined ? [] : loopItems(loop, t)
   const now = useNow(items.some(item => item.at !== undefined))
+  const narrow = useIsMobile()
   const first = items[0]
   if (first === undefined) return null
   const timing = loopTiming(first, now, t)
@@ -108,15 +110,15 @@ export function ClaudeLoopBar({ loop, running, t, submitPrompt }: {
   return (
     <div style={styles.loopBar} data-dsh-claude-loop-bar="">
       <span style={styles.loopBarIcon}><LoopIcon /></span>
-      <span style={styles.loopBarTitle}>{t('loopBarLabel')}</span>
+      {narrow ? null : <span style={styles.loopBarTitle}>{t('loopBarLabel')}</span>}
       <Tooltip label={all} side="top" delayMs={250} maxWidth={420}>
         <span style={styles.loopBarLabel}>{first.label}</span>
       </Tooltip>
-      {others.length === 0 ? null : <span style={styles.loopBarMore}>{t('loopMore', { count: others.length })}</span>}
+      {others.length === 0 || narrow ? null : <span style={styles.loopBarMore}>{t('loopMore', { count: others.length })}</span>}
       {timing === undefined ? null : <span style={styles.loopBarTiming} aria-live="off">{timing}</span>}
       {submitPrompt === undefined ? null : (
         <span style={styles.loopBarActions}>
-          {first.prompt === undefined ? null : (
+          {first.prompt === undefined || narrow ? null : (
             <button type="button" style={styles.loopBarButton} disabled={running} onClick={() => { submitPrompt(first.prompt as string, 'idle') }}>{t('loopRunNow')}</button>
           )}
           <button type="button" style={styles.loopBarButton} onClick={() => { submitPrompt(STOP_LOOP_PROMPT) }}>{t('loopStop')}</button>

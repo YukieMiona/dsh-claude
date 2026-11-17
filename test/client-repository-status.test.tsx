@@ -722,6 +722,39 @@ describe('linked repositories view', () => {
     expect(markup).toContain('data-dsh-claude-linked-repository="/extra1"')
   })
 
+  it('folds the session bar and its linked checkouts into one line on a narrow screen', () => {
+    applyLinkedRepositoriesMode('auto')
+    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
+      sessionId="session"
+      compact
+      useSessions={sessionsHook(false)}
+      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1, extraRepo2] })}
+      t={t}
+      openDiff={vi.fn()}
+      submitPrompt={vi.fn()}
+    />)
+    expect(markup).toContain('data-dsh-claude-compact-dock')
+    expect(markup).toContain('aria-expanded="false"')
+    expect(markup).toContain('>#101</span>')
+    expect(markup).toContain('>#102</span>')
+    // Collapsed: no full rows, neither linked nor the session's own.
+    expect(markup).not.toContain('data-dsh-claude-linked-repository="')
+    expect(markup).not.toContain('class="dshClaudeLinkedScrollArea"')
+  })
+
+  it('keeps the normal layout on a narrow screen when there are no other checkouts', () => {
+    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
+      sessionId="session"
+      compact
+      useSessions={sessionsHook(false)}
+      useClaudeProjection={hook(projection)}
+      t={t}
+      openDiff={vi.fn()}
+      submitPrompt={vi.fn()}
+    />)
+    expect(markup).not.toContain('data-dsh-claude-compact-dock')
+  })
+
   it('suppresses linked repositories completely when mode is hidden', () => {
     applyLinkedRepositoriesMode('hidden')
     const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
