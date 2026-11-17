@@ -88,6 +88,11 @@ describe('repository status parsing', () => {
     expect(parseGitHubRemote('git@github.com:owner/repo.git')).toBe('owner/repo')
     expect(parseGitHubRemote('ssh://git@github.com/owner/repo')).toBe('owner/repo')
     expect(parseGitHubRemote('https://example.com/owner/repo.git')).toBeUndefined()
+    // Seen live: a token in the remote URL hid the repository from the git bar.
+    expect(parseGitHubRemote('https://x-access-token:ghp_secret@github.com/owner/repo.git')).toBe('owner/repo')
+    expect(parseGitHubRemote('https://user@github.com/owner/repo/')).toBe('owner/repo')
+    // Credentials never make an unrelated host look like GitHub.
+    expect(parseGitHubRemote('https://github.com@example.com/owner/repo.git')).toBeUndefined()
   })
 
   it('aggregates checks and strictly normalizes pull requests', () => {

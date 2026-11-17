@@ -262,7 +262,9 @@ export function parseDiffNumstat(value: string): Omit<RepositoryDiffStatus, 'pat
 
 export function parseGitHubRemote(value: string): string | undefined {
   const remote = bounded(value)
-  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?$/iu.exec(remote)
+  // An https remote may carry credentials (`https://x-access-token:…@github.com/…`).
+  // They are matched and dropped here: only `owner/repo` leaves this function.
+  const match = /^(?:https:\/\/(?:[^@/\s]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/iu.exec(remote)
   if (match?.[1] === undefined || match[2] === undefined) return undefined
   return `${match[1]}/${match[2]}`
 }
