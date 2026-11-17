@@ -607,7 +607,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const [own, ownStatus] = await Promise.all([repositoryStatus.rootOf(cwd), repositoryStatus.inspect(cwd)])
       const roots = await touchedRepositoryRoots(touchedFilePaths(activities), own ?? cwd, directory => repositoryStatus.rootOf(directory), MAX_EXTRA_REPOSITORIES)
       const probed = await Promise.all(roots.map(root => repositoryStatus.inspect(root)))
-      const checkouts = probed.filter(linkedRepositoryShown)
+      const checkouts = probed.filter(status => linkedRepositoryShown(status))
       // Pull requests the log names that no linked checkout is sitting on any
       // more: the checkout moved on, the pull request did not. A clone of the
       // same repository the session went through, even one back on its base
@@ -643,7 +643,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         if (cloneRoot === undefined || status.status !== 'ready') return status
         if (status.branch !== undefined && cleanedLinked.has(`${cloneRoot}\0${status.branch}`)) return { status: 'unavailable' as const, cwd }
         return { ...status, root: cloneRoot }
-      }))).filter(linkedRepositoryShown)
+      }))).filter(status => linkedRepositoryShown(status))
       const linked = [...checkouts, ...detached]
       extraRoots.vouch(sessionId, linked.flatMap(status => (status.root === undefined ? [] : [status.root])))
       return linked

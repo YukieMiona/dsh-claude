@@ -59,6 +59,8 @@ const WRITE_CONTEXTS: readonly RegExp[] = [
 const MAX_PATHS_PER_COMMAND = 50
 const PULL_REQUEST_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d{1,9})(?![\d])/gu
 const MAX_PULL_REQUESTS = 12
+/** How long a merged pull request with no checkout left stays in the linked list. */
+export const SETTLED_PULL_REQUEST_SHOWN_MS = 30 * 60_000
 
 function unescaped(escaped: string): string | undefined {
   try {
@@ -237,7 +239,16 @@ export async function touchedRepositoryRoots(
  *  nothing pending -- either way its bar comes down. A checkout with an open
  *  or merged pull request, or unpushed commits, stays. A clean branch with no
  *  upstream is what a tool checkout looks like and is no evidence on its own. */
-export function linkedRepositoryShown(status: RepositoryStatus): boolean {
+export function linkedRepositoryShown(status: RepositoryStatus, now = Date.now()): boolean {
   if (status.status !== 'ready') return false
-  return status.dirty === true || (status.ahead ?? 0) > 0 || status.pullRequest !== undefined
+  if (status.dirty === true || (status.ahead ?? 0) > 0) return true
+  const pullRequest = status.pullRequest
+  if (pullRequest === undefined) return false
+  // A pull request the session opened and no checkout sits on any more has
+  // nothing left to act on once it is settled. A merge stays long enough to
+  // be seen landing; a long session otherwise carries every pull request it
+  // ever merged above the composer for good.
+  if (status.pullRequestOnly !== true || pullRequest.state === 'open') return true
+  if (pullRequest.state !== 'merged' || pullRequest.mergedAt === undefined) return false
+  return now - Date.parse(pullRequest.mergedAt) < SETTLED_PULL_REQUEST_SHOWN_MS
 }

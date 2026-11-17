@@ -137,6 +137,21 @@ describe('linked repository visibility', () => {
   const ready = { status: 'ready' as const, cwd: '/b', root: '/b', branch: 'fix', detached: false, worktree: false, dirty: false, upstream: true, ahead: 0 }
   const pullRequest = { number: 1, title: 't', url: 'https://github.com/o/r/pull/1', state: 'merged' as const, draft: false, review: 'none' as const, checks: 'none' as const }
 
+  it('drops a settled pull request that no checkout sits on, after a merge has been seen landing', () => {
+    const now = Date.parse('2026-11-17T00:00:00Z')
+    const only = { ...ready, pullRequestOnly: true }
+    const mergedAt = (minutesAgo: number): string => new Date(now - minutesAgo * 60_000).toISOString()
+    expect(linkedRepositoryShown({ ...only, pullRequest: { ...pullRequest, state: 'open' } }, now)).toBe(true)
+    expect(linkedRepositoryShown({ ...only, pullRequest: { ...pullRequest, mergedAt: mergedAt(5) } }, now)).toBe(true)
+    // Seen live: five pull requests merged 5 to 16 hours earlier still listed.
+    expect(linkedRepositoryShown({ ...only, pullRequest: { ...pullRequest, mergedAt: mergedAt(16 * 60) } }, now)).toBe(false)
+    expect(linkedRepositoryShown({ ...only, pullRequest: { ...pullRequest, state: 'closed' } }, now)).toBe(false)
+    // A checkout still on the merged branch keeps its bar: it offers the cleanup.
+    expect(linkedRepositoryShown({ ...ready, pullRequest: { ...pullRequest, mergedAt: mergedAt(16 * 60) } }, now)).toBe(true)
+    // Unpushed or uncommitted work always shows.
+    expect(linkedRepositoryShown({ ...only, dirty: true, pullRequest: { ...pullRequest, state: 'closed' } }, now)).toBe(true)
+  })
+
   it('shows a checkout while there is something to see and hides it once it is back to nothing', () => {
     expect(linkedRepositoryShown({ ...ready, dirty: true })).toBe(true)
     expect(linkedRepositoryShown({ ...ready, ahead: 2 })).toBe(true)
