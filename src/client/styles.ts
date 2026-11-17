@@ -1484,10 +1484,16 @@ export const dockPanel: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   marginBottom: 6,
+  padding: '4px 4px 6px',
+  boxSizing: 'border-box',
+  // One card for the whole panel. Its rows are flat (see the stylesheet):
+  // drawn as cards of their own, each brought a different edge -- solid,
+  // dashed, a merged glow -- and the panel read as a pile of unrelated bars.
+  ...dockSurface,
 }
 
 export const dockSection: CSSProperties = {
-  padding: '2px 4px 4px',
+  padding: '6px 10px 2px',
   fontSize: 11,
   fontWeight: 600,
   letterSpacing: '0.02em',
@@ -1711,6 +1717,22 @@ export const repositoryAutoFixCss = `
 
 .dshClaudeDockPanel {
   scrollbar-width: thin;
+}
+.dshClaudeDockPanel > div:not(.dshClaudeDockSection) {
+  border: 0 !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  margin: 0 !important;
+  border-radius: 8px !important;
+  /* The card's surface can be translucent; a row painting it again on top
+     would show as a darker rectangle. */
+  background: transparent !important;
+}
+.dshClaudeDockPanel > div:not(.dshClaudeDockSection):hover {
+  background: color-mix(in srgb, currentColor 5%, transparent) !important;
+}
+.dshClaudeDockPanel > div[data-dsh-claude-merged] {
+  background: color-mix(in srgb, #a78bfa 9%, transparent) !important;
 }
 .dshClaudeDockLine:hover {
   background: color-mix(in srgb, var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1)) 92%, var(--dsw-alias-label-primary) 8%) !important;

@@ -812,7 +812,7 @@ export function LinkedRepositoryBar({ sessionId, repository, running, t, openDif
   const branch = branchLabel(repository, t)
   const merged = repository.pullRequest?.state === 'merged'
   return (
-    <div style={{ ...styles.repositoryBar, ...styles.repositoryBarLinked, ...(merged ? styles.repositoryBarMerged : {}) }} data-dsh-claude-linked-repository={key}>
+    <div style={{ ...styles.repositoryBar, ...styles.repositoryBarLinked, ...(merged ? styles.repositoryBarMerged : {}) }} data-dsh-claude-linked-repository={key} {...(merged ? { 'data-dsh-claude-merged': '' } : {})}>
       <StatusGlyph label={t('repositoryLinked')} tone="neutral"><LinkIcon /></StatusGlyph>
       <PullRequestLink repository={repository} t={t} />
       <Tooltip label={repository.remote ?? repositoryLabel(repository)} side="top" delayMs={250} maxWidth={420}>
@@ -897,7 +897,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
       <span style={styles.repositoryPrimary}>{repository.status === 'not-repository' ? t('repositoryNotGit') : t('repositoryUnavailable')}</span>
     </div>
   ) : (
-    <div style={{ ...styles.repositoryBar, ...(merged ? styles.repositoryBarMerged : {}) }}>
+    <div style={{ ...styles.repositoryBar, ...(merged ? styles.repositoryBarMerged : {}) }} {...(merged ? { 'data-dsh-claude-merged': '' } : {})}>
       <span style={{ ...styles.repositoryPrIcon, ...(merged ? styles.repositoryPrIconMerged : {}) }}><PullRequestIcon merged={merged} /></span>
       <PullRequestLink repository={repository} t={t} />
       {repository.remote === undefined ? null : (
@@ -921,13 +921,13 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
         <div style={styles.dockPanel} className="dshClaudeDockPanel">
           {ownRow === null ? null : (
             <>
-              <div style={styles.dockSection}>{t('dockThisSession')}</div>
+              <div style={styles.dockSection} className="dshClaudeDockSection">{t('dockThisSession')}</div>
               {ownRow}
             </>
           )}
           {others.length === 0 ? null : (
             <>
-              <div style={styles.dockSection}>{t('dockOtherCheckouts')}</div>
+              <div style={styles.dockSection} className="dshClaudeDockSection">{t('dockOtherCheckouts')}</div>
               {others.map(item => (
                 <LinkedRepositoryBar
                   key={repositoryKey(item)}
@@ -944,7 +944,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
           )}
           {loop === undefined ? null : (
             <>
-              <div style={styles.dockSection}>{t('loopBarLabel')}</div>
+              <div style={styles.dockSection} className="dshClaudeDockSection">{t('loopBarLabel')}</div>
               <ClaudeLoopBar loop={loop} running={running} t={t} {...(submitPrompt === undefined ? {} : { submitPrompt })} />
             </>
           )}

@@ -738,6 +738,20 @@ describe('linked repositories view', () => {
     expect(markup).toContain('data-dsh-claude-linked-repository="/extra2"')
   })
 
+  it('draws the opened panel as one card whose rows carry no edges of their own', () => {
+    applyLinkedRepositoriesMode('expanded')
+    const mergedRepo = { ...extraRepo2, pullRequest: { ...extraRepo2.pullRequest, state: 'merged' as const } }
+    const markup = render({ ...projection, repositories: [extraRepo1, mergedRepo] })
+    // The rows' own borders, shadows and margins are cancelled by the panel's rule.
+    // Inside a <style> tag in static markup, so `>` arrives escaped.
+    expect(markup).toContain('.dshClaudeDockPanel &gt; div:not(.dshClaudeDockSection)')
+    expect(markup).toContain('border: 0 !important')
+    expect(markup).toContain('box-shadow: none !important')
+    expect(markup.match(/class="dshClaudeDockSection"/g)).toHaveLength(2)
+    // A merged row is marked so the card can tint it without an edge.
+    expect(markup.match(/data-dsh-claude-merged=""/g)).toHaveLength(1)
+  })
+
   it('folds chips past the limit into a count, sooner on a narrow screen', () => {
     applyLinkedRepositoriesMode('auto')
     const many = [1, 2, 3, 4, 5, 6].map(index => ({ ...extraRepo1, root: `/extra${index}`, pullRequest: { ...extraRepo1.pullRequest, number: 100 + index } }))
