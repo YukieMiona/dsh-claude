@@ -2167,6 +2167,9 @@ export class ClaudeSupervisor {
     if (active === undefined || active.phase !== 'waiting-tasks' || this.#hasRunningTasks(entry, active)) return
     active.phase = 'follow-up'
     active.promptUuid = randomUUID()
+    // The report prompt is this turn's own: its result closes the turn, and
+    // must never read as the late answer to some earlier turn's prompt.
+    active.ownedPromptUuids.add(active.promptUuid)
     active.sawTextDelta = false
     active.text = ''
     this.#closeTranscriptTextSegment(active)
