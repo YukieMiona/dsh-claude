@@ -1370,6 +1370,130 @@ export const repositoryBranch: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 
+/** The dock's single line: always this tall, whatever the session has going. */
+export const dockLine: CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  minHeight: 32,
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '4px 10px 4px 12px',
+  ...dockSurface,
+  color: 'var(--dsw-alias-label-primary)',
+  font: 'inherit',
+  fontSize: 13,
+  lineHeight: '20px',
+  textAlign: 'left',
+  cursor: 'pointer',
+}
+
+export const dockOwn: CSSProperties = {
+  flex: '0 1 auto',
+  minWidth: 0,
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  overflow: 'hidden',
+}
+
+export const dockRepository: CSSProperties = {
+  flex: 'none',
+  fontWeight: 600,
+}
+
+export const dockOthers: CSSProperties = {
+  flex: '1 1 0',
+  minWidth: 0,
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  overflow: 'hidden',
+}
+
+export const dockChip: CSSProperties = {
+  flex: '0 1 auto',
+  minWidth: 0,
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 5,
+  padding: '1px 7px',
+  borderRadius: 999,
+  background: 'color-mix(in srgb, currentColor 9%, transparent)',
+  fontSize: 12,
+  lineHeight: '18px',
+  whiteSpace: 'nowrap',
+}
+
+export const dockChipLabel: CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+
+export const dockDot: CSSProperties = {
+  flex: 'none',
+  width: 7,
+  height: 7,
+  borderRadius: '50%',
+}
+
+export const dockDotTone: Record<'neutral' | 'success' | 'warning' | 'error' | 'merged', CSSProperties> = {
+  neutral: { background: 'var(--dsw-alias-label-tertiary, #8a8f98)' },
+  success: { background: 'var(--dsw-alias-state-success-primary, #2da44e)' },
+  warning: { background: 'var(--dsw-alias-state-warning-primary, #d69e2e)' },
+  error: { background: 'var(--dsw-alias-state-error-primary, #d64545)' },
+  merged: { background: 'var(--dsw-static-purple-450, #8250df)' },
+}
+
+export const dockDiff: CSSProperties = {
+  flex: 'none',
+  fontSize: 12,
+  fontVariantNumeric: 'tabular-nums',
+}
+
+export const dockMore: CSSProperties = {
+  flex: 'none',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
+export const dockRight: CSSProperties = {
+  flex: 'none',
+  marginLeft: 'auto',
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  color: 'var(--dsw-alias-label-secondary)',
+}
+
+export const dockLoop: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 12,
+}
+
+/** The opened dock: every checkout and the loop in full, above the line. */
+export const dockPanel: CSSProperties = {
+  maxHeight: 'min(320px, 50vh)',
+  overflowY: 'auto',
+  overscrollBehavior: 'contain',
+  display: 'flex',
+  flexDirection: 'column',
+  marginBottom: 6,
+}
+
+export const dockSection: CSSProperties = {
+  padding: '2px 4px 4px',
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: '0.02em',
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+
 export const loopBar: CSSProperties = {
   width: '100%',
   minWidth: 0,
@@ -1585,19 +1709,16 @@ export const repositoryAutoFixCss = `
   color: var(--dsw-alias-label-on-accent, #fff);
 }
 
-.dshClaudeLinkedScrollArea {
+.dshClaudeDockPanel {
   scrollbar-width: thin;
 }
-.dshClaudeLinkedSummaryBar:hover {
-  background: color-mix(in srgb, var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1)) 90%, var(--dsw-alias-label-primary) 10%) !important;
+.dshClaudeDockLine:hover {
+  background: color-mix(in srgb, var(--dsw-specific-menu, var(--dsw-alias-bg-layer-1)) 92%, var(--dsw-alias-label-primary) 8%) !important;
 }
 @media (max-width: 640px) {
-  .dshClaudeLinkedScrollArea {
-    max-height: 130px !important;
-  }
-  .dshClaudeLinkedScrollArea [data-dsh-claude-linked-repository] {
-    margin-bottom: 4px !important;
-    padding: 3px 8px !important;
+  .dshClaudeDockPanel > div {
+    flex-wrap: wrap;
+    row-gap: 2px;
     font-size: 12px !important;
   }
 }
@@ -3566,6 +3687,30 @@ export const promptSuggestionProperty = '--dsh-claude-suggestion'
  *  do; on an empty draft it takes the placeholder's seat, since the editor's
  *  empty paragraph holds a <br> that would push an `::after` to a second
  *  line. Both give way while an IME is composing. */
+/** The tap target for a suggestion: a phone has no Tab key to take it with. */
+export const promptSuggestionAccept: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  maxWidth: 160,
+  height: 24,
+  padding: '0 8px',
+  border: '1px solid var(--dsw-alias-border-l1, color-mix(in srgb, currentColor 18%, transparent))',
+  borderRadius: 999,
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-secondary)',
+  font: 'inherit',
+  fontSize: 12,
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+}
+
+export const promptSuggestionAcceptText: CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+}
+
 export const promptSuggestionCss = `
 [${promptSuggestionAttribute}="inline"] > [data-composer-input]:not([data-composer-composing]) p:last-child::after {
   content: var(${promptSuggestionProperty});

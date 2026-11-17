@@ -372,8 +372,9 @@ ${error.stack ?? ''}`
       }
     },
   }, ClaudePermissionSelect))
-  // Draws nothing in the row: it only needs a seat inside the composer card
-  // to find the editor it ghosts the next-prompt suggestion into.
+  // Needs a seat inside the composer card to find the editor it ghosts the
+  // next-prompt suggestion into; while one is offered it also draws the
+  // button that takes it, for screens with no Tab key.
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left',
     id: 'claude-prompt-suggestion',
@@ -384,7 +385,7 @@ ${error.stack ?? ''}`
       const scope = sessions?.scope(sessionId as SessionId)
       if (scope === undefined || conversation === undefined) return { report }
       const facade = sessionInput(conversation, scope)
-      return { report, acceptDraft: text => { facade.setDraft(text) } }
+      return { report, acceptLabel: t('promptSuggestionAccept'), acceptDraft: text => { facade.setDraft(text) } }
     },
   }, ClaudePromptSuggestion))
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({

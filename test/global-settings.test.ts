@@ -223,10 +223,13 @@ describe('Claude Code global settings registry', () => {
       kind: 'select', value: 'auto', effect: 'immediate',
     })
 
-    const updated = await updateGlobalSettings({ linkedRepositories: 'collapsed' }, { paths })
-    expect(updated.settings.find(setting => setting.key === 'linkedRepositories')).toMatchObject({ value: 'collapsed' })
-    expect(JSON.parse(await readFile(paths.pluginSettingsFile, 'utf8'))).toEqual({ linkedRepositories: 'collapsed' })
+    const updated = await updateGlobalSettings({ linkedRepositories: 'expanded' }, { paths })
+    expect(updated.settings.find(setting => setting.key === 'linkedRepositories')).toMatchObject({ value: 'expanded' })
+    expect(JSON.parse(await readFile(paths.pluginSettingsFile, 'utf8'))).toEqual({ linkedRepositories: 'expanded' })
     await expect(updateGlobalSettings({ linkedRepositories: 'invalid-mode' }, { paths })).rejects.toThrow('Invalid value')
+    // A value an earlier version offered reads as the default, not as an error.
+    await writeFile(paths.pluginSettingsFile, JSON.stringify({ linkedRepositories: 'collapsed' }))
+    expect((await readGlobalSettings({ paths })).settings.find(setting => setting.key === 'linkedRepositories')).toMatchObject({ value: 'auto' })
   })
 
   it('serializes concurrent changes without producing malformed settings', async () => {

@@ -106,7 +106,7 @@ describe('Claude diff panel repository switch', () => {
 })
 
 describe('Claude repository bar with linked checkouts', () => {
-  it('renders one linked bar per other checkout, below the session bar, with its own diff and pull request', async () => {
+  it('lists each other checkout in the opened dock, under the session\'s own row, with its own diff and pull request', async () => {
     const { ClaudeRepositoryStatus } = await import('../src/client/ClaudeRepositoryStatus.tsx')
     const openDiff = vi.fn()
     const linked = {
@@ -129,11 +129,21 @@ describe('Claude repository bar with linked checkouts', () => {
         useClaudeProjection={(<S,>(selector: (value: ClaudeClientProjection) => S): S => selector(projection)) as never}
       />)
     })
+    // Closed, the dock is one line: a chip for the other checkout, no rows.
+    expect(container.querySelector('[data-dsh-claude-dock]')?.getAttribute('data-dsh-claude-dock')).toBe('closed')
+    expect(container.querySelectorAll('[data-dsh-claude-linked-repository]')).toHaveLength(0)
+    expect(container.textContent).toContain('#7')
+    const line = container.querySelector<HTMLButtonElement>('.dshClaudeDockLine')
+    if (line === null) throw new Error('no dock line')
+    act(() => { line.click() })
+    expect(container.querySelector('[data-dsh-claude-dock]')?.getAttribute('data-dsh-claude-dock')).toBe('open')
     const bars = [...container.querySelectorAll('[data-dsh-claude-linked-repository]')]
     expect(bars.map(bar => bar.getAttribute('data-dsh-claude-linked-repository'))).toEqual(['/b'])
     const bar = bars[0] as HTMLElement
-    // Linked bars stack above; the session bar stays last, next to the composer.
-    expect(container.textContent?.indexOf('fix')).toBeLessThan(container.textContent?.indexOf('feature') ?? -1)
+    // The panel lists the session's own row first, then the other checkouts.
+    const panel = container.querySelector('.dshClaudeDockPanel')?.textContent ?? ''
+    expect(panel.indexOf('feature')).toBeGreaterThanOrEqual(0)
+    expect(panel.indexOf('feature')).toBeLessThan(panel.indexOf('fix'))
     expect(bar.textContent).toContain('b')
     expect(bar.textContent).toContain('fix')
     expect(bar.textContent).toContain(en.repositoryWorktree)
@@ -427,8 +437,10 @@ describe('repository bar hook order', () => {
     render({ ...EMPTY_CLAUDE_PROJECTION, owned: false })
     expect(container.textContent).toBe('')
     render({ ...EMPTY_CLAUDE_PROJECTION, owned: true, repository: own, repositories: [other] })
-    expect(container.querySelectorAll('[data-dsh-claude-linked-repository]')).toHaveLength(1)
     expect(container.textContent).toContain('feature')
+    // Opening the dock mounts the rows and their hooks in the same component.
+    act(() => { container.querySelector<HTMLButtonElement>('.dshClaudeDockLine')?.click() })
+    expect(container.querySelectorAll('[data-dsh-claude-linked-repository]')).toHaveLength(1)
     expect(errors.flat().some(item => /hooks|#310/iu.test(String(item)))).toBe(false)
     consoleError.mockRestore()
   })

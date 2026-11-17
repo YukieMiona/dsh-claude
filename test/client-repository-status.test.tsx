@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { composeConflictsPrompt } from '../src/client/pr-feedback-api.ts'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ClaudeDiffPanel, actionLabel, expandDiffRows, numberDiffLines, parseUnifiedDiff, rangeCommentAnchor, repositoryActionAvailability } from '../src/client/ClaudeDiffPanel.tsx'
-import { ClaudeRepositoryStatus, LinkedRepositoriesView, PullRequestHoverCard, repositorySummary, updateBranchMounted } from '../src/client/ClaudeRepositoryStatus.tsx'
+import { ClaudeRepositoryStatus, PullRequestHoverCard, repositorySummary, repositoryTone, updateBranchMounted } from '../src/client/ClaudeRepositoryStatus.tsx'
 import { applyLinkedRepositoriesMode } from '../src/client/linked-repositories-mode.ts'
 import { nextActionToast } from '../src/client/action-toast.tsx'
 import type { ClaudeCodeSettingsKey } from '../src/client/locales.ts'
@@ -80,9 +80,14 @@ const copy: Partial<Record<ClaudeCodeSettingsKey, string>> = {
   repositoryMergedAgo: '{age} ago',
   repositoryChecks: 'Checks',
   repositoryLinked: 'Linked repository',
-  linkedRepositoriesSummary: '{count} linked repositories / PRs',
-  linkedRepositoriesExpand: 'Expand',
-  linkedRepositoriesCollapse: 'Collapse',
+  dockThisSession: 'This session',
+  dockOtherCheckouts: 'Other checkouts',
+  dockExpand: 'Show git and loop details',
+  dockCollapse: 'Hide git and loop details',
+  loopBarLabel: 'Loop',
+  loopDue: 'due now',
+  loopRunNow: 'Run now',
+  loopStop: 'Stop loop',
   repositoryChecks_passing: 'Checks passing',
   repositoryReview: 'Review',
   repositoryReview_approved: 'Approved',
@@ -122,6 +127,11 @@ function sessionsHook(blank: boolean) {
     byId: { session: { blank } },
   })
 }
+
+// The dock is one line that opens a panel holding each row and its controls.
+// The tests of those controls read them with the panel open, which is what
+// the 'expanded' setting gives a user; the dock's own tests set their mode.
+beforeEach(() => { applyLinkedRepositoriesMode('expanded') })
 
 describe('Claude repository status UI', () => {
   it('names the files the diff left out for size', () => {
@@ -191,7 +201,8 @@ describe('Claude repository status UI', () => {
     expect(statusMarkup).not.toContain('Mercaso/premier-store-os</span>')
     expect(statusMarkup).toContain('margin:0 auto')
     expect(statusMarkup).not.toContain('max-width:524px')
-    expect(statusMarkup.match(/<button/g)).toHaveLength(2)
+    // The diff button, the merge menu, and the dock line that opens the panel.
+    expect(statusMarkup.match(/<button/g)).toHaveLength(3)
     expect(statusMarkup).toContain('aria-label="View working tree diff"')
     expect(statusMarkup).toContain('aria-label="Open merge options"')
     expect(statusMarkup).toContain('>Merge<')
@@ -687,90 +698,87 @@ describe('linked repositories view', () => {
     },
   }
 
-  it('collapses multiple linked repositories into a summary bar with count and PR numbers in auto mode', () => {
+  const render = (value: ClaudeClientProjection, extra: { compact?: boolean } = {}): string => renderToStaticMarkup(<ClaudeRepositoryStatus
+    sessionId="session"
+    useSessions={sessionsHook(false)}
+    useClaudeProjection={hook(value)}
+    t={t}
+    openDiff={vi.fn()}
+    submitPrompt={vi.fn()}
+    {...extra}
+  />)
+
+  it('is one closed line by default: the session, a chip per other checkout, no rows', () => {
     applyLinkedRepositoriesMode('auto')
-    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
-      sessionId="session"
-      useSessions={sessionsHook(false)}
-      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1, extraRepo2] })}
-      t={t}
-      openDiff={vi.fn()}
-      submitPrompt={vi.fn()}
-    />)
-
-    expect(markup).toContain('class="dshClaudeLinkedSummaryBar"')
-    expect(markup).toContain('2 linked repositories / PRs')
-    expect(markup).toContain('>#101</a>')
-    expect(markup).toContain('>#102</a>')
-    expect(markup).toContain('Expand')
-    // Not expanded by default in auto mode when multiple
-    expect(markup).not.toContain('class="dshClaudeLinkedScrollArea"')
-  })
-
-  it('renders a single linked repository directly in auto mode', () => {
-    applyLinkedRepositoriesMode('auto')
-    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
-      sessionId="session"
-      useSessions={sessionsHook(false)}
-      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1] })}
-      t={t}
-      openDiff={vi.fn()}
-      submitPrompt={vi.fn()}
-    />)
-
-    expect(markup).not.toContain('class="dshClaudeLinkedSummaryBar"')
-    expect(markup).toContain('data-dsh-claude-linked-repository="/extra1"')
-  })
-
-  it('folds the session bar and its linked checkouts into one line on a narrow screen', () => {
-    applyLinkedRepositoriesMode('auto')
-    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
-      sessionId="session"
-      compact
-      useSessions={sessionsHook(false)}
-      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1, extraRepo2] })}
-      t={t}
-      openDiff={vi.fn()}
-      submitPrompt={vi.fn()}
-    />)
-    expect(markup).toContain('data-dsh-claude-compact-dock')
+    const markup = render({ ...projection, repositories: [extraRepo1, extraRepo2] })
+    expect(markup).toContain('data-dsh-claude-dock="closed"')
+    expect(markup).toContain('class="dshClaudeDockLine"')
     expect(markup).toContain('aria-expanded="false"')
     expect(markup).toContain('>#101</span>')
     expect(markup).toContain('>#102</span>')
-    // Collapsed: no full rows, neither linked nor the session's own.
+    // Closed: neither the session's own row nor any other checkout's.
+    expect(markup).not.toContain('class="dshClaudeDockPanel"')
     expect(markup).not.toContain('data-dsh-claude-linked-repository="')
-    expect(markup).not.toContain('class="dshClaudeLinkedScrollArea"')
   })
 
-  it('keeps the normal layout on a narrow screen when there are no other checkouts', () => {
-    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
-      sessionId="session"
-      compact
-      useSessions={sessionsHook(false)}
-      useClaudeProjection={hook(projection)}
-      t={t}
-      openDiff={vi.fn()}
-      submitPrompt={vi.fn()}
-    />)
-    expect(markup).not.toContain('data-dsh-claude-compact-dock')
-  })
-
-  it('suppresses linked repositories completely when mode is hidden', () => {
-    applyLinkedRepositoriesMode('hidden')
-    const markup = renderToStaticMarkup(<ClaudeRepositoryStatus
-      sessionId="session"
-      useSessions={sessionsHook(false)}
-      useClaudeProjection={hook({ ...projection, repositories: [extraRepo1, extraRepo2] })}
-      t={t}
-      openDiff={vi.fn()}
-      submitPrompt={vi.fn()}
-    />)
-
-    expect(markup).not.toContain('class="dshClaudeLinkedSummaryBar"')
-    expect(markup).not.toContain('data-dsh-claude-linked-repository="')
-    expect(markup).not.toContain('/extra1')
-    expect(markup).not.toContain('/extra2')
-    // Reset back to auto
+  it('is the same single line for a session with no other checkouts', () => {
     applyLinkedRepositoriesMode('auto')
+    const markup = render(projection)
+    expect(markup).toContain('data-dsh-claude-dock="closed"')
+    expect(markup).not.toContain('class="dshClaudeDockPanel"')
+  })
+
+  it('opens into sections holding every row in full', () => {
+    applyLinkedRepositoriesMode('expanded')
+    const markup = render({ ...projection, repositories: [extraRepo1, extraRepo2] })
+    expect(markup).toContain('data-dsh-claude-dock="open"')
+    expect(markup).toContain('This session')
+    expect(markup).toContain('Other checkouts')
+    expect(markup).toContain('data-dsh-claude-linked-repository="/extra1"')
+    expect(markup).toContain('data-dsh-claude-linked-repository="/extra2"')
+  })
+
+  it('folds chips past the limit into a count, sooner on a narrow screen', () => {
+    applyLinkedRepositoriesMode('auto')
+    const many = [1, 2, 3, 4, 5, 6].map(index => ({ ...extraRepo1, root: `/extra${index}`, pullRequest: { ...extraRepo1.pullRequest, number: 100 + index } }))
+    const wide = render({ ...projection, repositories: many })
+    expect(wide).toContain('>#104</span>')
+    expect(wide).not.toContain('>#105</span>')
+    expect(wide).toContain('>+2</span>')
+    const narrow = render({ ...projection, repositories: many }, { compact: true })
+    expect(narrow).toContain('>#102</span>')
+    expect(narrow).not.toContain('>#103</span>')
+    expect(narrow).toContain('>+4</span>')
+  })
+
+  it('shows the loop countdown on the line, and the dock for a loop with no repository', () => {
+    applyLinkedRepositoriesMode('auto')
+    const loop = { jobs: [{ id: 'c1', prompt: 'A test loop.', recurring: true, human: 'Every 3 minutes' }] }
+    expect(render({ ...projection, loop })).toContain('data-dsh-claude-loop-countdown')
+    expect(render(projection)).not.toContain('data-dsh-claude-loop-countdown')
+    const { repository: _repository, ...bare } = projection
+    expect(render({ ...bare, loop })).toContain('data-dsh-claude-dock="closed"')
+    expect(render(bare)).toBe('')
+  })
+
+  it('leaves other checkouts out when the setting hides them', () => {
+    applyLinkedRepositoriesMode('hidden')
+    const markup = render({ ...projection, repositories: [extraRepo1, extraRepo2] })
+    expect(markup).toContain('class="dshClaudeDockLine"')
+    expect(markup).not.toContain('>#101</span>')
+    expect(markup).not.toContain('/extra1')
+  })
+
+  it('reduces a checkout to one colour, with what needs attention first', () => {
+    const ready = { status: 'ready' as const, cwd: '/r', root: '/r', branch: 'b', detached: false, worktree: false, dirty: false }
+    const pullRequest = { number: 1, title: 't', url: 'https://github.com/o/r/pull/1', state: 'open' as const, draft: false, review: 'none' as const, checks: 'passing' as const }
+    expect(repositoryTone(ready)).toBe('neutral')
+    expect(repositoryTone({ ...ready, dirty: true })).toBe('warning')
+    expect(repositoryTone({ ...ready, pullRequest })).toBe('success')
+    expect(repositoryTone({ ...ready, pullRequest: { ...pullRequest, checks: 'pending' } })).toBe('warning')
+    expect(repositoryTone({ ...ready, pullRequest: { ...pullRequest, checks: 'failing' } })).toBe('error')
+    expect(repositoryTone({ ...ready, pullRequest, conflicts: ['a.ts'] })).toBe('error')
+    expect(repositoryTone({ ...ready, dirty: true, pullRequest: { ...pullRequest, state: 'merged' } })).toBe('merged')
+    expect(repositoryTone({ status: 'unavailable', cwd: '/r' })).toBe('neutral')
   })
 })

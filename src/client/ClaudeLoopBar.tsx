@@ -91,6 +91,20 @@ function LoopIcon() {
   )
 }
 
+/** The next fire as a ticking chip for the dock's one line; nothing when no loop is scheduled. */
+export function LoopCountdown({ loop, t }: { loop: ClaudeLoopView | undefined; t: Translate }) {
+  const first = loop === undefined ? undefined : loopItems(loop, t)[0]
+  const now = useNow(first?.at !== undefined)
+  if (first === undefined) return null
+  const text = first.at === undefined ? first.cadence : first.at <= now ? t('loopDue') : countdown(first.at - now)
+  return (
+    <span style={styles.dockLoop} data-dsh-claude-loop-countdown="">
+      <span style={styles.loopBarIcon}><LoopIcon /></span>
+      {text === undefined ? null : <span style={styles.loopBarTiming}>{text}</span>}
+    </span>
+  )
+}
+
 /** The composer's loop indicator: what is scheduled, when it next fires, and
  *  the two things a user wants to do about it. */
 export function ClaudeLoopBar({ loop, running, t, submitPrompt }: {

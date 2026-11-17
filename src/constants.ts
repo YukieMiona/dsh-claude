@@ -105,15 +105,14 @@ export function isClaudeProseMode(value: unknown): value is ClaudeProseMode {
  *  Client folds a run of them into one row and has only the title to go on. */
 export const API_RETRY_TITLE = 'Claude API retry'
 
-/** How linked repositories (other checkouts touched by the session) are displayed
- *  above the composer in the repository status bar.
+/** How the git dock above the composer starts out. It is always one line
+ *  (the session's checkout, a chip per other checkout it changed, the loop
+ *  countdown) that opens a panel with every row in full.
  *
- *  'auto' collapses multiple linked repositories or on mobile into a single summary bar;
- *  'collapsed' always shows the summary bar;
- *  'hidden' suppresses linked repositories from the dock;
- *  'expanded' shows every linked repository bar. */
-export type ClaudeLinkedRepositoriesMode = 'auto' | 'collapsed' | 'hidden' | 'expanded'
-export const CLAUDE_LINKED_REPOSITORIES_MODES = ['auto', 'collapsed', 'hidden', 'expanded'] as const
+ *  'auto' starts closed; 'hidden' leaves the other checkouts out;
+ *  'expanded' starts with the panel open. */
+export type ClaudeLinkedRepositoriesMode = 'auto' | 'hidden' | 'expanded'
+export const CLAUDE_LINKED_REPOSITORIES_MODES = ['auto', 'hidden', 'expanded'] as const
 export const DEFAULT_CLAUDE_LINKED_REPOSITORIES_MODE: ClaudeLinkedRepositoriesMode = 'auto'
 
 export function isClaudeLinkedRepositoriesMode(value: unknown): value is ClaudeLinkedRepositoriesMode {

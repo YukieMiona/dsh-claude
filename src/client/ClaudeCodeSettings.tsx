@@ -316,7 +316,6 @@ export const SETTING_OPTION_COPY: Readonly<Record<string, ClaudeCodeSettingsKey>
   'prose:plain': 'prosePlain',
   'prose:enhanced': 'proseEnhanced',
   'linkedRepositories:auto': 'linkedRepositoriesAuto',
-  'linkedRepositories:collapsed': 'linkedRepositoriesCollapsed',
   'linkedRepositories:hidden': 'linkedRepositoriesHidden',
   'linkedRepositories:expanded': 'linkedRepositoriesExpanded',
 }
