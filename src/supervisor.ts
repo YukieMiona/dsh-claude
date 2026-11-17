@@ -459,10 +459,14 @@ function sdkUserMessage(prompt: SDKUserMessage['message']['content'], uuid: Retu
   }
 }
 
+/** Sent by the Host, not typed by the user. It used to forbid further tools,
+ *  which stopped work that had only been waiting on a check: the model
+ *  reported, then sat on unshipped changes until the user wrote again. */
 const BACKGROUND_TASK_REPORT_PROMPT = [
+  '[Automatic note from the DSH host, not a message from the user.]',
   'The background tasks launched by your preceding response have now all settled.',
-  'Report their final completed or failed outcomes concisely to the user.',
-  'Do not start new tools or tasks, and do not repeat the earlier progress update.',
+  'If their outcomes are not yet reported, say briefly whether each completed or failed, without repeating the earlier progress update.',
+  'Then carry on with any work that was waiting on them; if nothing is left to do, the brief report is enough.',
 ].join(' ')
 
 function usageSummary(usage: ClaudeUsage): string {
