@@ -112,6 +112,32 @@ describe('ClaudePromptSuggestion', () => {
     expect(press(input, 'Tab').defaultPrevented).toBe(false)
   })
 
+  it('offers a button that takes the suggestion, for a screen with no Tab key', () => {
+    const { slot } = composer('')
+    const accept = vi.fn()
+    mount(slot, '', 'run the tests', accept)
+    const button = slot.querySelector<HTMLButtonElement>('[data-dsh-claude-suggestion-accept]')
+    expect(button).not.toBeNull()
+    expect(button?.getAttribute('title')).toBe('run the tests')
+    // The tap must not blur the editor before it lands.
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+    act(() => { button?.dispatchEvent(down) })
+    expect(down.defaultPrevented).toBe(true)
+    act(() => { button?.click() })
+    expect(accept).toHaveBeenCalledExactlyOnceWith('run the tests')
+  })
+
+  it('draws no button without a suggestion, or once the draft has diverged from it', () => {
+    const first = composer('')
+    mount(first.slot, '', undefined, vi.fn())
+    expect(first.slot.querySelector('[data-dsh-claude-suggestion-accept]')).toBeNull()
+    act(() => { mounted?.unmount() })
+    mounted = undefined
+    const second = composer('something else')
+    mount(second.slot, 'something else', 'run the tests', vi.fn())
+    expect(second.slot.querySelector('[data-dsh-claude-suggestion-accept]')).toBeNull()
+  })
+
   it('leaves keys alone while an IME is composing', () => {
     const { input, slot } = composer('run ')
     const accept = vi.fn()

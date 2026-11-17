@@ -9,6 +9,8 @@ export interface ClaudePromptSuggestionInjected {
   acceptDraft?: (text: string) => void
   /** Report the composer DOM this relies on going missing after a Host upgrade. */
   report?: (detail: string) => void
+  /** Localised label of the button that takes the suggestion. */
+  acceptLabel?: string
 }
 
 export interface ClaudePromptSuggestionProps extends ClaudePromptSuggestionInjected {
@@ -47,7 +49,7 @@ function caretAtEnd(root: Element): boolean {
  * the suggestion in the placeholder's seat instead. The text therefore wraps
  * and scrolls exactly like the draft, and nothing is positioned by hand.
  */
-export function ClaudePromptSuggestion({ useClaudeProjection, useInput, acceptDraft, report }: ClaudePromptSuggestionProps) {
+export function ClaudePromptSuggestion({ useClaudeProjection, useInput, acceptDraft, report, acceptLabel }: ClaudePromptSuggestionProps) {
   const owned = useClaudeProjection(projection => projection.owned)
   const suggestion = useClaudeProjection(projection => projection.promptSuggestion)
   const draft = useInput(state => state.draft)
@@ -83,9 +85,28 @@ export function ClaudePromptSuggestion({ useClaudeProjection, useInput, acceptDr
     }
   }, [remainder, suggestion, draft, acceptDraft, report])
 
+  // Tab and → take the suggestion from a keyboard. A touch screen has
+  // neither, so the same seat in the composer row offers it as a button.
   return (
-    <span ref={anchor} hidden>
-      <style data-dsh-claude-prompt-suggestion-styles>{styles.promptSuggestionCss}</style>
-    </span>
+    <>
+      <span ref={anchor} hidden>
+        <style data-dsh-claude-prompt-suggestion-styles>{styles.promptSuggestionCss}</style>
+      </span>
+      {remainder === undefined || suggestion === undefined || acceptDraft === undefined ? null : (
+        <button
+          type="button"
+          style={styles.promptSuggestionAccept}
+          title={suggestion}
+          aria-label={`${acceptLabel ?? 'Use suggestion'}: ${suggestion}`}
+          data-dsh-claude-suggestion-accept=""
+          // Keep the editor's focus and caret: the tap must not blur it first.
+          onMouseDown={event => { event.preventDefault() }}
+          onClick={() => { acceptDraft(suggestion) }}
+        >
+          <span aria-hidden="true">⇥</span>
+          <span style={styles.promptSuggestionAcceptText}>{acceptLabel ?? 'Use suggestion'}</span>
+        </button>
+      )}
+    </>
   )
 }
