@@ -353,9 +353,8 @@ interface SupervisorEntry {
   taskSnapshotAt: number
   /** Pending throttled snapshot flush timer. */
   taskSnapshotTimer: ReturnType<typeof setTimeout> | undefined
-  /** Newest `cumulativeCostUsd` this process reported. The counter belongs to
-   *  one `query()` call, so each process starts its own from zero. */
-  costReading: number
+  /** Newest cost counter this process reported; undefined before its first. */
+  costReading: number | undefined
   pump: Promise<void>
 }
 
@@ -1609,7 +1608,7 @@ export class ClaudeSupervisor {
       taskBoard: new ClaudeTaskBoard(),
       taskSnapshotAt: 0,
       taskSnapshotTimer: undefined,
-      costReading: 0,
+      costReading: undefined,
     } as SupervisorEntry
 
     const activeInteraction = async () => {
@@ -2269,12 +2268,13 @@ export class ClaudeSupervisor {
     result: Extract<NormalizedSdkMessage, { kind: 'result' }>,
   ): Promise<void> {
     if (result.usage.inputTokens === undefined && result.usage.outputTokens === undefined && result.usage.cumulativeCostUsd === undefined) return
-    // `cumulativeCostUsd` is per query() call, and a respawned Claude process
-    // starts a new one, so a session that respawned mid-conversation would
-    // show a total that goes DOWN. What the session has spent is the sum of
-    // what each of its processes spent.
-    const cumulative = await this.#sessionCost(entry, result.usage.cumulativeCostUsd)
-    const usage = cumulative === undefined ? result.usage : { ...result.usage, cumulativeCostUsd: cumulative }
+    // The result carries Claude Code's own counter, not the session's total;
+    // see #sessionCost for how one becomes the other.
+    const reported = result.usage.cumulativeCostUsd
+    const cumulative = await this.#sessionCost(entry, reported)
+    const usage = cumulative === undefined || reported === undefined
+      ? result.usage
+      : { ...result.usage, cumulativeCostUsd: cumulative, processCostUsd: reported }
     await this.#appendSafely(active, {
       kind: 'usage',
       phase: 'completed',
@@ -2285,38 +2285,59 @@ export class ClaudeSupervisor {
     active.output.push({ type: 'usage', usage: this.#reportedUsage(active, result) })
   }
 
-  /** What each session has spent across every process it has used. */
-  readonly #sessionCostTotals = new Map<string, number>()
+  /** What each session has spent across every process it has used, and the
+   *  last counter value Claude Code reported for it. */
+  readonly #sessionCostTotals = new Map<string, { total: number; counter: number | undefined }>()
 
-  /** Add what this process spent since its last reading to the session total.
+  /** Turn Claude Code's cost counter into what the session has spent.
    *
-   *  The reading is tracked per process rather than inferred from a drop in the
-   *  counter, so a new process whose first turn costs more than the previous
-   *  process's whole run is still counted in full. The first reading after this
-   *  supervisor starts continues from the last total the sidecar recorded, so a
-   *  Host restart does not reset the session either. */
+   *  Within one process the counter only grows, so the session gains the
+   *  difference. A new process is the question. Claude Code restores a resumed
+   *  session's counter and keeps counting from it (measured on 2.1.325: three
+   *  processes resuming one session reported 0.0030, 0.0040, 0.0041), so its
+   *  first reading already contains everything before it; adding it whole
+   *  doubled the session's total at every respawn. A counter that continues
+   *  from the last one therefore adds only the difference. One that comes in
+   *  below it restarted from zero (an older CLI, or a session it could not
+   *  restore) and is added whole.
+   *
+   *  A session recorded before the counter was kept has only an inflated
+   *  total to go on; for a resumed process the restored counter is then the
+   *  better figure, and replaces it. */
   async #sessionCost(entry: SupervisorEntry, reported: number | undefined): Promise<number | undefined> {
     if (reported === undefined) return undefined
     const sessionId = entry.sessionId
-    let total = this.#sessionCostTotals.get(sessionId)
-    if (total === undefined) total = await this.#persistedSessionCost(sessionId)
-    total += Math.max(0, reported - entry.costReading)
+    const state = this.#sessionCostTotals.get(sessionId) ?? await this.#persistedSessionCost(sessionId)
+    if (entry.costReading !== undefined) {
+      state.total += Math.max(0, reported - entry.costReading)
+    } else if (state.counter !== undefined) {
+      state.total += reported >= state.counter ? reported - state.counter : reported
+    } else if (entry.expectedResume !== undefined && state.total > 0) {
+      state.total = reported
+    } else {
+      state.total += reported
+    }
+    state.counter = reported
     entry.costReading = reported
-    this.#sessionCostTotals.set(sessionId, total)
-    return total
+    this.#sessionCostTotals.set(sessionId, state)
+    return state.total
   }
 
-  async #persistedSessionCost(sessionId: string): Promise<number> {
+  async #persistedSessionCost(sessionId: string): Promise<{ total: number; counter: number | undefined }> {
     try {
       const { activities } = await this.#sidecar.read(sessionId)
       for (let index = activities.length - 1; index >= 0; index -= 1) {
-        const cost = activities[index]!.usage?.cumulativeCostUsd
-        if (activities[index]!.kind === 'usage' && typeof cost === 'number' && Number.isFinite(cost)) return cost
+        const usage = activities[index]!.usage
+        const cost = usage?.cumulativeCostUsd
+        if (activities[index]!.kind === 'usage' && typeof cost === 'number' && Number.isFinite(cost)) {
+          const counter = usage?.processCostUsd
+          return { total: cost, counter: typeof counter === 'number' && Number.isFinite(counter) ? counter : undefined }
+        }
       }
     } catch {
       // An unreadable projection starts the count at this process.
     }
-    return 0
+    return { total: 0, counter: undefined }
   }
 
   async #completeTurn(

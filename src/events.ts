@@ -38,6 +38,10 @@ export interface ClaudeUsage {
   cacheReadTokens?: number
   cacheCreationTokens?: number
   cumulativeCostUsd?: number
+  /** Claude Code's own cost counter at this reading. Kept beside the session
+   *  total so the next process's first reading can be told apart: a counter
+   *  that continues from here was restored on resume, one below it restarted. */
+  processCostUsd?: number
   /** Wall time from the turn being admitted to it settling. Measured here
    *  rather than derived on the client: activities carry no timestamps. */
   durationMs?: number

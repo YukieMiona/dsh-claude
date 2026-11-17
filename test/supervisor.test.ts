@@ -277,9 +277,10 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
-  it("counts a new process's first turn in full even when it outspends the previous process", async () => {
-    // A drop in the counter is not the respawn signal: here the new process's
-    // first reading is higher than the old process's whole run.
+  it("adds only the difference when a new process's counter continues from the last one", async () => {
+    // Claude Code restores a resumed session's cost counter, so a new
+    // process's first reading already contains what the old one spent. Adding
+    // it whole doubled the session's total at every respawn.
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -294,7 +295,8 @@ describe('Claude supervisor', () => {
     await runtime.disposeSession(owner.agent.id as string)
     await turn(0.3)
     const rows = (await projection(runtime)).activities.filter(activity => activity.kind === 'usage')
-    expect(rows.map(row => row.usage?.cumulativeCostUsd)).toEqual([0.1, 0.4])
+    expect(rows.map(row => row.usage?.cumulativeCostUsd)).toEqual([0.1, 0.3])
+    expect(rows.map(row => row.usage?.processCostUsd)).toEqual([0.1, 0.3])
     await runtime.dispose()
   })
 
@@ -322,10 +324,62 @@ describe('Claude supervisor', () => {
     await second.dispose()
   })
 
+  it('does not double a session\'s cost when a resumed process restores its counter after a restart', async () => {
+    const root = join(tmpdir(), `dsh-claude-supervisor-${randomUUID()}`)
+    sidecarRoots.push(root)
+    const owner = fakeAgent()
+    const turn = async (runtime: ClaudeSupervisor, transport: ReturnType<typeof factory>, cost: number) => {
+      const output = await runtime.runTurn({ agent: owner.agent, prompt: 'work' })
+      const query = transport.queries.at(-1)!
+      query.push(init())
+      query.push({ ...result('done') as object, total_cost_usd: cost } as SDKMessage)
+      await collect(output)
+    }
+    const firstTransport = factory()
+    const first = supervisor(firstTransport.create, 4, 60_000, new ClaudeSidecarRepository({ root }))
+    await turn(first, firstTransport, 31.22)
+    await first.dispose()
+
+    // The new process resumed the session: its counter starts at 31.22.
+    const secondTransport = factory()
+    const second = supervisor(secondTransport.create, 4, 60_000, new ClaudeSidecarRepository({ root }))
+    await turn(second, secondTransport, 31.29)
+    const rows = (await projection(second)).activities.filter(activity => activity.kind === 'usage')
+    expect(rows.map(row => row.usage?.cumulativeCostUsd)).toEqual([31.22, 31.29])
+    await second.dispose()
+  })
+
+  it('replaces a total inflated by earlier double counting with the restored counter', async () => {
+    const root = join(tmpdir(), `dsh-claude-supervisor-${randomUUID()}`)
+    sidecarRoots.push(root)
+    const owner = fakeAgent()
+    const sidecar = new ClaudeSidecarRepository({ root })
+    const firstTransport = factory()
+    const first = supervisor(firstTransport.create, 4, 60_000, sidecar)
+    const opening = await first.runTurn({ agent: owner.agent, prompt: 'work' })
+    firstTransport.queries.at(-1)!.push(init())
+    firstTransport.queries.at(-1)!.push(result('done'))
+    await collect(opening)
+    await first.dispose()
+    // A total as an earlier version recorded it: doubled, and with no counter.
+    await sidecar.appendActivity(owner.agent.id as string, {
+      turn: 1, step: 1, ordinal: 9_000, kind: 'usage', phase: 'completed', title: 'Claude usage', usage: { cumulativeCostUsd: 62.51 },
+    })
+
+    const secondTransport = factory()
+    const second = supervisor(secondTransport.create, 4, 60_000, new ClaudeSidecarRepository({ root }))
+    const output = await second.runTurn({ agent: owner.agent, prompt: 'work' })
+    secondTransport.queries.at(-1)!.push(init())
+    secondTransport.queries.at(-1)!.push({ ...result('done') as object, total_cost_usd: 31.4 } as SDKMessage)
+    await collect(output)
+    const rows = (await projection(second)).activities.filter(activity => activity.kind === 'usage')
+    expect(rows.at(-1)?.usage).toMatchObject({ cumulativeCostUsd: 31.4, processCostUsd: 31.4 })
+    await second.dispose()
+  })
+
   it('keeps a session\'s cost whole across a respawn', async () => {
-    // The CLI's cumulative cost is per query() call, so a respawned process
-    // starts counting again from zero. The transcript is one session, and the
-    // money it spent is the sum of what its processes spent.
+    // A counter that comes in below the last one restarted from zero (an
+    // older CLI, or a session it could not restore), so it is added whole.
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
