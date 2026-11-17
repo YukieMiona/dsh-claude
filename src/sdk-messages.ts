@@ -3,7 +3,20 @@ import type { ClaudeUsage } from './events.ts'
 import { API_RETRY_TITLE, CLAUDE_PROGRESS_SUBTYPES, CLAUDE_UNKNOWN_MESSAGE_PREFIX, claudeStatusTitle } from './constants.ts'
 
 export type NormalizedSdkMessage =
-  | { kind: 'init'; sessionId: string; cliVersion: string; cwd: string }
+  | {
+    kind: 'init'
+    sessionId: string
+    cliVersion: string
+    cwd: string
+    /** Whether this CLI reports each prompt's lifecycle, and so names the
+     *  prompt a result answers (`msg_lifecycle_v1`). */
+    namesPrompts: boolean
+  }
+  | {
+    /** A prompt the CLI was given has finished, whatever its outcome. */
+    kind: 'command-ended'
+    commandUuid: string
+  }
   | { kind: 'text-delta'; text: string; parentToolUseId?: string }
   | { kind: 'assistant-text'; text: string; parentToolUseId?: string }
   | { kind: 'thinking'; text: string; phase: 'updated' | 'completed'; parentToolUseId?: string }
@@ -226,7 +239,7 @@ function normalizeSystem(message: Record<string, unknown>): NormalizedSdkMessage
     const cliVersion = string(message.claude_code_version)
     const cwd = string(message.cwd)
     return sessionId !== undefined && cliVersion !== undefined && cwd !== undefined
-      ? [{ kind: 'init', sessionId, cliVersion, cwd }]
+      ? [{ kind: 'init', sessionId, cliVersion, cwd, namesPrompts: Array.isArray(message.capabilities) && message.capabilities.includes('msg_lifecycle_v1') }]
       : [{ kind: 'protocol-error', title: 'Malformed Claude initialization message', detail: message }]
   }
   if (subtype === 'status') {
@@ -549,6 +562,9 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
     if (value.state === 'started' && commandUuid !== undefined && (source === 'loop_wakeup' || source === 'schedule_wakeup')) {
       const scheduledFor = finiteNumber(value.scheduled_for)
       return [{ kind: 'scheduled-turn', commandUuid, source, ...(scheduledFor === undefined ? {} : { scheduledFor }) }]
+    }
+    if (commandUuid !== undefined && ['completed', 'cancelled', 'discarded', 'refused'].includes(String(value.state))) {
+      return [{ kind: 'command-ended', commandUuid }]
     }
     return [{ kind: 'progress', subtype: 'command_lifecycle' }]
   }

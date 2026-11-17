@@ -252,6 +252,10 @@ interface ActiveTurn {
   loopTurn?: boolean
   /** When a `rate_limit_event` rejected this turn, the epoch ms the quota resets. */
   rateLimitResetAt?: number
+  /** A result that named no prompt and was shown as progress while this turn
+   *  waited for its own. Kept so the turn can still end on it if the prompt
+   *  finishes without ever being named. */
+  unattributedResult?: Extract<NormalizedSdkMessage, { kind: 'result' }>
   /** Whether this turn sent Claude a prompt of its own. False for a turn that
    *  only draws a scheduler-fired turn: that turn's result is then its answer. */
   promptSent?: boolean
@@ -343,6 +347,9 @@ interface SupervisorEntry {
    *  Their results name no user message, which is the only way to tell them
    *  from the answer to a prompt this plugin sent. */
   scheduledTurnsOpen: number
+  /** Whether this CLI names the prompt each result answers. When it does, a
+   *  result naming none is never the answer to a prompt this plugin sent. */
+  namesPrompts: boolean
   /** Uuids of prompts sent to this process whose results have not arrived. A
    *  result for one that the running DSH turn does not own is a late answer to
    *  an earlier turn, not a protocol violation. */
@@ -1604,6 +1611,7 @@ export class ClaudeSupervisor {
       tasks: new Map<string, ClaudeTaskInfo>(),
       scheduleCalls: new Map(),
       scheduledTurnsOpen: 0,
+      namesPrompts: false,
       sentPrompts: new Set<string>(),
       taskBoard: new ClaudeTaskBoard(),
       taskSnapshotAt: 0,
@@ -1728,6 +1736,7 @@ export class ClaudeSupervisor {
         throw new ClaudeProtocolError(`Claude Code initialized in unexpected cwd ${message.cwd}; expected ${entry.cwd}`)
       }
       entry.initialized = true
+      entry.namesPrompts = message.namesPrompts
       entry.claudeSessionId = message.sessionId
       entry.state = entry.active === undefined ? 'idle' : 'running'
       // A newly created Query cannot retain tasks from the previous process,
@@ -1782,6 +1791,17 @@ export class ClaudeSupervisor {
       }
     }
 
+    // The safety net for the rule above: if this turn's prompt finished and
+    // its answer was never named, the turn ends on the result it was shown.
+    if (message.kind === 'command-ended') {
+      const open = entry.active
+      if (open !== undefined && open.unattributedResult !== undefined && open.ownedPromptUuids.has(message.commandUuid) && open.phase === 'primary') {
+        this.#logger?.warn(`dsh-claude: prompt ${message.commandUuid} finished without a named result in ${entry.sessionId}; closing the turn`)
+        await this.#completeTurn(entry, open, open.unattributedResult)
+      }
+      return
+    }
+
     if (message.kind === 'scheduled-turn') {
       entry.scheduledTurnsOpen += 1
       await this.#adoptScheduledTurn(entry, message)
@@ -1816,6 +1836,18 @@ export class ClaudeSupervisor {
       const scheduledResult = message.userMessageUuid === undefined && entry.scheduledTurnsOpen > 0
       if (scheduledResult) entry.scheduledTurnsOpen -= 1
       if (scheduledResult && active.promptSent === true && active.phase !== 'waiting-tasks') {
+        await this.#completeProgressSegment(active, message)
+        return
+      }
+      // Claude Code runs turns of its own that no prompt asked for: its
+      // reaction to a settled background task, or, in a resumed process, to a
+      // task the previous process left behind. Seen live, such a result closed
+      // the user's turn empty and the real answer was dropped. This CLI names
+      // the prompt every answer belongs to, so a result naming none is not
+      // the answer to the prompt this turn sent.
+      if (message.userMessageUuid === undefined && entry.namesPrompts && active.promptSent === true && active.phase === 'primary') {
+        this.#logger?.warn(`dsh-claude: a result naming no prompt arrived while ${active.promptUuid} is unanswered in ${entry.sessionId}; shown as progress`)
+        active.unattributedResult = message
         await this.#completeProgressSegment(active, message)
         return
       }

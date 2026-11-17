@@ -302,6 +302,47 @@ describe('Claude Code /loop under the supervisor', () => {
     await h.supervisor.dispose()
   })
 
+  it('does not let a result that names no prompt answer a turn that sent one', async () => {
+    // Seen live: a resumed process reported a background task the previous
+    // process had left behind. That result closed the user's turn empty, and
+    // the real answer arrived with no turn left to show it.
+    const h = harness()
+    const stream = await h.supervisor.runTurn({ agent: h.agent, prompt: 'what happened?', model: 'default' })
+    const query = h.queries[0]!
+    query.push({ ...init() as object, capabilities: ['msg_lifecycle_v1'] } as SDKMessage)
+    query.push(result('A background task was stopped.'))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(h.supervisor.snapshots()[0]).toMatchObject({ state: 'running' })
+    query.push(result('Here is what happened.', { user_message_uuid: query.sent[0]!.uuid }))
+    expect(await drain(stream)).toContainEqual({ type: 'complete', text: 'Here is what happened.' })
+    await h.supervisor.dispose()
+  })
+
+  it('still ends the turn when its prompt finishes without ever being named', async () => {
+    const h = harness()
+    const stream = await h.supervisor.runTurn({ agent: h.agent, prompt: 'hello', model: 'default' })
+    const query = h.queries[0]!
+    query.push({ ...init() as object, capabilities: ['msg_lifecycle_v1'] } as SDKMessage)
+    query.push(result('hi'))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(h.supervisor.snapshots()[0]).toMatchObject({ state: 'running' })
+    query.push({ type: 'command_lifecycle', command_uuid: query.sent[0]!.uuid, state: 'completed', session_id: 'claude-1' } as unknown as SDKMessage)
+    const events = await drain(stream)
+    expect(events.at(-1)).toMatchObject({ type: 'complete' })
+    expect(h.supervisor.snapshots()[0]).toMatchObject({ state: 'idle' })
+    await h.supervisor.dispose()
+  })
+
+  it('keeps the old rule for a CLI that does not name prompts', async () => {
+    const h = harness()
+    const stream = await h.supervisor.runTurn({ agent: h.agent, prompt: 'hello', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    query.push(result('hi'))
+    expect(await drain(stream)).toContainEqual({ type: 'complete', text: 'hi' })
+    await h.supervisor.dispose()
+  })
+
   it('absorbs the late answer to an earlier turn\'s prompt instead of ending the process', async () => {
     const h = harness()
     const first = await h.supervisor.runTurn({ agent: h.agent, prompt: 'first', model: 'default' })

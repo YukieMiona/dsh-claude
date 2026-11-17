@@ -13,7 +13,22 @@ describe('Claude SDK message normalization', () => {
       claude_code_version: '2.1.233',
       cwd: '/workspace',
       apiKeySource: 'user',
-    }))).toEqual([{ kind: 'init', sessionId: 'session-1', cliVersion: '2.1.233', cwd: '/workspace' }])
+    }))).toEqual([{ kind: 'init', sessionId: 'session-1', cliVersion: '2.1.233', cwd: '/workspace', namesPrompts: false }])
+  })
+
+  it('reads whether the CLI names the prompt each result answers, and when a prompt has ended', () => {
+    expect(normalizeSdkMessage(sdk({
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+      claude_code_version: '2.1.325',
+      cwd: '/workspace',
+      capabilities: ['interrupt_receipt_v1', 'msg_lifecycle_v1'],
+    }))).toEqual([{ kind: 'init', sessionId: 'session-1', cliVersion: '2.1.325', cwd: '/workspace', namesPrompts: true }])
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'prompt-1', state: 'completed' })))
+      .toEqual([{ kind: 'command-ended', commandUuid: 'prompt-1' }])
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'prompt-1', state: 'queued' })))
+      .toEqual([{ kind: 'progress', subtype: 'command_lifecycle' }])
   })
 
   it('normalizes partial visible text', () => {
