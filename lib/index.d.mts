@@ -359,6 +359,22 @@ interface ClaudeLoopView {
     human?: string;
     nextAt?: number;
   }[];
+  /** A `/goal` condition Claude Code is still holding the session to. */
+  goal?: ClaudeGoalView;
+  /** Messages the user asked the Host to send later. */
+  sends?: {
+    id: string;
+    text: string;
+    at: number;
+    repeatMs?: number;
+    waiting?: boolean;
+  }[];
+}
+interface ClaudeGoalView {
+  condition: string;
+  setAt: number;
+  /** How many times Claude tried to stop and was sent back to work. */
+  rounds: number;
 }
 //#endregion
 //#region src/host-jobs.d.ts
@@ -542,6 +558,8 @@ interface Config {
   model?: string;
   idleTimeoutMs?: number;
   maxProcesses?: number;
+  /** How long a blocking Bash call runs before it is moved to the background; 0 never moves it. */
+  foregroundBashBackgroundMs?: number;
 }
 declare const Config: z<Config>;
 declare function mountClaudeMetadata(ctx: Context, supervisor: ClaudeSupervisor, agent: Agent, model: string, publishCommands?: (commands: readonly ClaudeCommandView[]) => void, resolveCommands?: () => ClaudeAgentCommandService | undefined): (() => Promise<void>) | undefined;
