@@ -1811,6 +1811,7 @@ export class ClaudeSupervisor {
     const active = entry.active
     if (active === undefined) {
       if (message.kind === 'result') {
+        for (const uuid of message.answeredPromptUuids ?? []) entry.sentPrompts.delete(uuid)
         if (message.userMessageUuid !== undefined) entry.sentPrompts.delete(message.userMessageUuid)
         else if (entry.scheduledTurnsOpen > 0) entry.scheduledTurnsOpen -= 1
         if (entry.orphanScheduledTurn === true) {
@@ -1828,6 +1829,12 @@ export class ClaudeSupervisor {
         throw new ClaudeProtocolError(`Claude Code result session ${message.sessionId} does not match ${entry.claudeSessionId}`)
       }
       const sentEarlier = message.userMessageUuid !== undefined && entry.sentPrompts.delete(message.userMessageUuid)
+      // The CLI folds a prompt that arrives mid-turn into the running turn and
+      // answers both with one result named after the first. When that first
+      // prompt belonged to an earlier DSH turn, this is still the only answer
+      // the open turn's prompt will ever get.
+      const foldedAnswer = (message.answeredPromptUuids ?? []).some(uuid => uuid !== message.userMessageUuid && active.ownedPromptUuids.has(uuid))
+      for (const uuid of message.answeredPromptUuids ?? []) entry.sentPrompts.delete(uuid)
       // A result naming no user message, while a scheduler-fired turn is open,
       // is that turn's. It answers a DSH turn only when the turn sent nothing
       // of its own; otherwise the turn's own answer is still to come, whatever
@@ -1859,7 +1866,7 @@ export class ClaudeSupervisor {
         await this.#completeProgressSegment(active, message)
         return
       }
-      if (message.userMessageUuid !== undefined && !active.ownedPromptUuids.has(message.userMessageUuid)) {
+      if (message.userMessageUuid !== undefined && !foldedAnswer && !active.ownedPromptUuids.has(message.userMessageUuid)) {
         if (sentEarlier) {
           // The late answer to a prompt an earlier DSH turn sent. That turn is
           // over; show what Claude said here and keep waiting for this turn's.

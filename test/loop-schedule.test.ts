@@ -363,6 +363,26 @@ describe('Claude Code /loop under the supervisor', () => {
     await h.supervisor.dispose()
   })
 
+  it('ends a turn whose prompt was folded into the answer to an earlier turn\'s prompt', async () => {
+    const h = harness()
+    const first = await h.supervisor.runTurn({ agent: h.agent, prompt: 'first', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    // The first turn is cut short while Claude Code is still working on it.
+    query.push(result('unrelated'))
+    await drain(first)
+
+    const second = await h.supervisor.runTurn({ agent: h.agent, prompt: 'second', model: 'default' })
+    await vi.waitFor(() => { expect(query.sent).toHaveLength(2) })
+    // One result answers both prompts and is named after the first.
+    query.push(result('answer to both', {
+      user_message_uuid: query.sent[0]!.uuid,
+      user_message_uuids: [query.sent[0]!.uuid, query.sent[1]!.uuid],
+    }))
+    expect(await drain(second)).toContainEqual({ type: 'complete', text: 'answer to both' })
+    await h.supervisor.dispose()
+  })
+
   it('defers a model switch requested while a scheduled turn is being attached', async () => {
     const h = harness()
     const scheduledFor = Date.now() + 120_000

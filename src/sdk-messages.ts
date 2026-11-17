@@ -97,7 +97,7 @@ export type NormalizedSdkMessage =
     scheduledFor?: number
   }
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
-  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; failureDetail?: string; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
+  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; failureDetail?: string; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; answeredPromptUuids?: readonly string[]; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
   | { kind: 'protocol-error'; title: string; detail: unknown }
   /** Claude Code's guess at the user's next prompt; arrives after `result`. */
   | { kind: 'prompt-suggestion'; text: string }
@@ -488,6 +488,11 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       ? value.result
       : undefined
     const userMessageUuid = string(value.user_message_uuid)
+    // A prompt that arrives while a turn runs is folded into that turn: one
+    // result answers both and names the first, listing every one here.
+    const answeredPromptUuids = Array.isArray(value.user_message_uuids)
+      ? value.user_message_uuids.filter((item): item is string => typeof item === 'string' && item.length > 0).slice(0, 64)
+      : undefined
     // User sends the CLI had not reached when it produced this result: non-zero
     // means at least one more turn follows without further input, so this result
     // is not the end of the turn.
@@ -515,6 +520,7 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       usage: resultUsage(value),
       sessionId,
       ...(userMessageUuid === undefined ? {} : { userMessageUuid }),
+      ...(answeredPromptUuids === undefined || answeredPromptUuids.length === 0 ? {} : { answeredPromptUuids }),
       ...(queuedTurnCount === undefined ? {} : { queuedTurnCount }),
     }]
   }
