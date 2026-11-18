@@ -13,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-jobs'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
-import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER_IDS, CLAUDE_STEERING_SERVICE } from './constants.ts'
+import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER_IDS, CLAUDE_STEERING_SERVICE, MAX_EXTRA_REPOSITORIES } from './constants.ts'
 import { CLAUDE_COMMANDS_SERVICE, projectClaudeCommands, type ClaudeAgentCommandService, type ClaudeCommandView } from './command-bridge.ts'
 import { ClaudeSidecarRepository } from './sidecar.ts'
 import { resolveClaudeExecutable } from './executable.ts'
@@ -90,9 +90,8 @@ const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (prese
 const CATALOG_RETRY_MS = 5_000
 const SCOPE_RETRY_MS = 500
 const MAX_CATALOG_RETRIES = 3
-/** Bounded: each extra checkout costs a git chain and a `gh pr view` per sweep.
- *  A fan-out over every backend service is the largest real case. */
-const MAX_EXTRA_REPOSITORIES = 12
+// MAX_EXTRA_REPOSITORIES is bounded: each extra checkout costs a git chain and
+// a `gh pr view` per sweep. A fan-out over every backend service is the largest real case.
 const MAX_SCOPE_RETRIES = 24
 
 export function mountClaudeMetadata(

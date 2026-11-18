@@ -145,7 +145,8 @@ describe('Claude client sidecar projection', () => {
     }).repositories).toMatchObject([{ root: '/b' }])
     expect(() => parseClaudeClientProjection({ ...valid, repositories: [{ status: 'nope', cwd: '/b' }] })).toThrow()
     expect(() => parseClaudeClientProjection({ ...valid, repositories: { status: 'ready', cwd: '/b' } })).toThrow()
-    expect(() => parseClaudeClientProjection({ ...valid, repositories: Array.from({ length: 9 }, () => ({ status: 'ready', cwd: '/b' })) })).toThrow()
+    // Nine checkouts once threw, and the session that had nine rendered blank.
+    expect(parseClaudeClientProjection({ ...valid, repositories: Array.from({ length: 9 }, () => ({ status: 'ready', cwd: '/b' })) }).repositories).toHaveLength(9)
   })
 
   it('validates pending review comments', () => {
@@ -614,5 +615,18 @@ describe('trimmed snapshots', () => {
     await settle()
     expect(calls).toBe(2)
     whole.dispose()
+  })
+})
+
+describe('repositories list', () => {
+  const repository = (index: number) => ({ status: 'ready', cwd: `/w/${index}`, root: `/w/${index}`, branch: `b${index}`, detached: false, dirty: false })
+
+  it('accepts as many checkouts as the Host sends, and cuts a longer list instead of refusing the snapshot', async () => {
+    const { MAX_EXTRA_REPOSITORIES } = await import('../src/constants.ts')
+    const full = parseClaudeClientProjection({ ...valid, repositories: Array.from({ length: MAX_EXTRA_REPOSITORIES }, (_unused, index) => repository(index)) })
+    expect(full.repositories).toHaveLength(MAX_EXTRA_REPOSITORIES)
+    const over = parseClaudeClientProjection({ ...valid, repositories: Array.from({ length: MAX_EXTRA_REPOSITORIES + 5 }, (_unused, index) => repository(index)) })
+    expect(over.repositories).toHaveLength(MAX_EXTRA_REPOSITORIES)
+    expect(over.activities).toHaveLength(1)
   })
 })

@@ -59,6 +59,10 @@ export const CLAUDE_BACKGROUND_TASK_PATH = '/plugins/dsh-claude/background-task'
 export const CLAUDE_PERMISSION_MODE_PATH = '/plugins/dsh-claude/permission-mode'
 export const CLAUDE_SCHEDULED_SEND_PATH = '/plugins/dsh-claude/scheduled-send'
 export const CLAUDE_HISTORY_PATH = '/plugins/dsh-claude/history'
+/** How many other checkouts a session's projection may list. One number for
+ *  both sides: the Host once sent up to 12 while the page accepted 8 and threw
+ *  the whole snapshot away over the ninth, leaving the session blank. */
+export const MAX_EXTRA_REPOSITORIES = 12
 export const CLAUDE_PLAN_FEEDBACK_PATH = '/plugins/dsh-claude/plan/feedback'
 /** Title of the transcript row that shows the reviewer's own plan notes; the
  *  renderer keys its label on it. */

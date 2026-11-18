@@ -4,7 +4,7 @@ import type { ClaudeCommandView } from '../command-bridge.ts'
 import type { RepositoryStatus } from '../repository-status.ts'
 import type { ReviewComment } from '../review-comments.ts'
 import type { ClaudeLoopView } from '../loop-schedule.ts'
-import { CLAUDE_HISTORY_PATH, CLAUDE_PROJECTION_PATH, isClaudeRenderMode } from '../constants.ts'
+import { CLAUDE_HISTORY_PATH, CLAUDE_PROJECTION_PATH, MAX_EXTRA_REPOSITORIES, isClaudeRenderMode } from '../constants.ts'
 import { MAX_MULTIPLEX_SESSIONS } from '../plugin-budget.ts'
 import { MAX_REWIND_RANGES, type ClaudeRewindRange } from '../rewind.ts'
 import { isClaudePermissionMode, isClaudePermissionSelector, type ClaudePermissionModeView, type ClaudePermissionSelector } from '../permission-mode.ts'
@@ -69,7 +69,7 @@ const MAX_DIFF_CHARS = 256 * 1024
 const MAX_CONFLICT_PATHS = 100
 const MAX_REVIEW_COMMENTS = 50
 /** Matches the server's cap on probed checkouts. */
-const MAX_REPOSITORIES = 8
+const MAX_REPOSITORIES = MAX_EXTRA_REPOSITORIES
 const MAX_REVIEW_COMMENT_CHARS = 2_000
 const MAX_LOOP_JOBS = 64
 const MAX_TRANSCRIPT_CHARS = 64_000
@@ -146,7 +146,7 @@ function validateRepository(value: unknown): value is RepositoryStatus {
 
 /** Validate the public route envelope before publishing it to UI components. */
 export function parseClaudeClientProjection(value: unknown): ClaudeClientProjection {
-  const input = record(value)
+  let input = record(value)
   if (input === undefined
     || input.schemaVersion !== 1
     || !nonNegativeInteger(input.revision)
@@ -179,8 +179,13 @@ export function parseClaudeClientProjection(value: unknown): ClaudeClientProject
   if (input.repository !== undefined && !validateRepository(input.repository)) {
     throw new Error('invalid Claude repository projection')
   }
+  // A list longer than this page expects is cut, not refused: the list is a
+  // convenience beside the transcript, and refusing it refused the transcript.
+  if (Array.isArray(input.repositories) && input.repositories.length > MAX_REPOSITORIES) {
+    input = { ...input, repositories: input.repositories.slice(0, MAX_REPOSITORIES) }
+  }
   if (input.repositories !== undefined && (!Array.isArray(input.repositories)
-    || input.repositories.length > MAX_REPOSITORIES || !input.repositories.every(validateRepository))) {
+    || !input.repositories.every(validateRepository))) {
     throw new Error('invalid Claude repositories projection')
   }
   if (input.reviewComments !== undefined) {
