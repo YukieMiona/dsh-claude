@@ -159,6 +159,7 @@ declare const en: {
   readonly promptSuggestionAccept: "Use suggestion";
   readonly dockThisSession: "This session";
   readonly dockOtherCheckouts: "Other checkouts";
+  readonly dockMergedFold: "{count} merged";
   readonly dockExpand: "Show git and loop details";
   readonly dockCollapse: "Hide git and loop details";
   readonly loopWakeup: "Scheduled wakeup";
