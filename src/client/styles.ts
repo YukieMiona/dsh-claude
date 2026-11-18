@@ -1825,7 +1825,12 @@ export const repositoryAutoFixCss = `
      at this width they take their own line instead. */
   .dshClaudeDockPanel > div[data-dsh-claude-linked-repository] > :last-child,
   .dshClaudeDockPanel > div[data-dsh-claude-own-repository] > :last-child {
-    flex: 1 0 auto !important;
+    /* A full line of their own, and a second one when even that is too
+       narrow: with a wide diff count the last button ran off the edge. */
+    flex: 1 1 100% !important;
+    max-width: 100% !important;
+    flex-wrap: wrap !important;
+    row-gap: 4px;
     overflow: visible !important;
   }
 }
