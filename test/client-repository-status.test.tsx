@@ -760,9 +760,26 @@ describe('linked repositories view', () => {
     expect(wide).not.toContain('>#105</span>')
     expect(wide).toContain('>+2</span>')
     const narrow = render({ ...projection, repositories: many }, { compact: true })
-    expect(narrow).toContain('>#102</span>')
-    expect(narrow).not.toContain('>#103</span>')
-    expect(narrow).toContain('>+4</span>')
+    // One chip on a phone: two were cut to "#…" there.
+    expect(narrow).toContain('>#101</span>')
+    expect(narrow).not.toContain('>#102</span>')
+    expect(narrow).toContain('>+5</span>')
+  })
+
+  it('folds merged checkouts into one row and one chip until the row is opened', () => {
+    const merged = [1, 2, 3].map(index => ({ ...extraRepo1, root: `/merged${index}`, pullRequest: { ...extraRepo1.pullRequest, number: 200 + index, state: 'merged' as const } }))
+    applyLinkedRepositoriesMode('expanded')
+    const open = render({ ...projection, repositories: [extraRepo1, ...merged] })
+    expect(open).toContain('data-dsh-claude-merged-fold="closed"')
+    expect(open).toContain('data-dsh-claude-linked-repository="/extra1"')
+    expect(open).not.toContain('data-dsh-claude-linked-repository="/merged1"')
+    // The line counts them instead of spending a chip on each.
+    expect(open).toContain('data-dsh-claude-merged-count=""')
+    expect(open).not.toContain('>#201</span>')
+    // A single merged checkout is not worth a fold.
+    const single = render({ ...projection, repositories: [merged[0]!] })
+    expect(single).not.toContain('data-dsh-claude-merged-fold')
+    expect(single).toContain('data-dsh-claude-linked-repository="/merged1"')
   })
 
   it('shows the loop countdown on the line, and the dock for a loop with no repository', () => {

@@ -72,6 +72,8 @@ export const CLAUDE_METADATA_TIMEOUT_MS = 15_000
  *  ordinary test and build runs, and Claude Code then told the model the user
  *  had moved them, which the user had not. */
 export const CLAUDE_FOREGROUND_BASH_BACKGROUND_MS = 5 * 60_000
+/** How long a request to move a command to the background may go unanswered. */
+export const CLAUDE_BACKGROUND_REQUEST_TIMEOUT_MS = 8_000
 /** Bound on steered messages one turn may own, so a misbehaving caller cannot
  *  grow the ownership set without limit. */
 export const MAX_STEERED_PROMPTS_PER_TURN = 16
@@ -2727,7 +2729,16 @@ export class ClaudeSupervisor {
     this.#disarmAutoBackground(active, toolUseId)
     let moved = false
     try {
-      moved = await entry.query.backgroundTasks(toolUseId)
+      // Claude Code does not always answer this request (seen with a command
+      // it was not ready to detach); unanswered, the button that asked spun
+      // for ever with nothing to say why.
+      moved = await Promise.race([
+        entry.query.backgroundTasks(toolUseId),
+        new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => { resolve(false) }, CLAUDE_BACKGROUND_REQUEST_TIMEOUT_MS)
+          timer.unref?.()
+        }),
+      ])
     } catch (error) {
       this.#logger?.warn(`dsh-claude: moving tool call ${toolUseId} to the background failed: ${error instanceof Error ? error.message : String(error)}`)
     }

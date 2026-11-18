@@ -822,7 +822,7 @@ export function LinkedRepositoryBar({ sessionId, repository, running, t, openDif
       <Tooltip label={branch} side="top" delayMs={250} maxWidth={420}>
         <span style={styles.repositoryBranch}>{branch}</span>
       </Tooltip>
-      {repository.worktree === true ? <span style={styles.repositoryWorktree}>{t('repositoryWorktree')}</span> : null}
+      {repository.worktree === true ? <span style={styles.repositoryWorktree} data-dsh-claude-worktree-label="">{t('repositoryWorktree')}</span> : null}
       <RepositoryControls sessionId={sessionId} repository={repository} root={repository.root} running={running} t={t} report={report} openDiff={() => openDiff(repository.root)} {...(submitPrompt === undefined ? {} : { submitPrompt })} />
     </div>
   )
@@ -844,7 +844,7 @@ export function repositoryTone(repository: RepositoryStatus): DockTone {
 
 /** How many other checkouts get a chip of their own before the rest fold into "+N". */
 const DOCK_CHIPS = 4
-const DOCK_CHIPS_NARROW = 2
+const DOCK_CHIPS_NARROW = 1
 
 function repositoryKey(repository: RepositoryStatus): string {
   return repository.root ?? `${repository.remote ?? repository.cwd}#${repository.pullRequest?.number ?? ''}`
@@ -882,6 +882,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   const isMobile = useIsMobile()
   const mode = useLinkedRepositoriesMode()
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined)
+  const [settledOpen, setSettledOpen] = useState(false)
   const loop = projection.loop
   // The route answers with the new list at once; the projection catches up on
   // its next sweep, and from then on it is the one to believe again.
@@ -895,7 +896,24 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   const open = userOpen ?? mode === 'expanded'
   const ready = repository?.status === 'ready'
   const merged = repository?.pullRequest?.state === 'merged'
-  const shown = others.slice(0, narrow ? DOCK_CHIPS_NARROW : DOCK_CHIPS)
+  // Checkouts whose pull request is merged have one thing left to do and
+  // nothing left to watch. Listed in full they buried the rest: nine of them
+  // made a phone's panel a screen-long scroll.
+  const settled = others.filter(item => item.status === 'ready' && item.pullRequest?.state === 'merged')
+  const unsettled = others.filter(item => !settled.includes(item))
+  const shown = unsettled.slice(0, narrow ? DOCK_CHIPS_NARROW : DOCK_CHIPS)
+  const linkedRow = (item: RepositoryStatus) => (
+    <LinkedRepositoryBar
+      key={repositoryKey(item)}
+      sessionId={sessionId}
+      repository={item}
+      running={running}
+      t={t}
+      openDiff={openDiff}
+      report={report}
+      {...(submitPrompt === undefined ? {} : { submitPrompt })}
+    />
+  )
   const diff = ready ? repository.diff : undefined
 
   const ownRow = repository === undefined ? null : !ready ? (
@@ -904,7 +922,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
       <span style={styles.repositoryPrimary}>{repository.status === 'not-repository' ? t('repositoryNotGit') : t('repositoryUnavailable')}</span>
     </div>
   ) : (
-    <div style={{ ...styles.repositoryBar, ...(merged ? styles.repositoryBarMerged : {}) }} {...(merged ? { 'data-dsh-claude-merged': '' } : {})}>
+    <div style={{ ...styles.repositoryBar, ...(merged ? styles.repositoryBarMerged : {}) }} data-dsh-claude-own-repository="" {...(merged ? { 'data-dsh-claude-merged': '' } : {})}>
       <span style={{ ...styles.repositoryPrIcon, ...(merged ? styles.repositoryPrIconMerged : {}) }}><PullRequestIcon merged={merged} /></span>
       <PullRequestLink repository={repository} t={t} />
       {repository.remote === undefined ? null : (
@@ -915,7 +933,7 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
       <Tooltip label={branchLabel(repository, t)} side="top" delayMs={250} maxWidth={420}>
         <span style={styles.repositoryBranch}>{branchLabel(repository, t)}</span>
       </Tooltip>
-      {repository.worktree === true ? <span style={styles.repositoryWorktree}>{t('repositoryWorktree')}</span> : null}
+      {repository.worktree === true ? <span style={styles.repositoryWorktree} data-dsh-claude-worktree-label="">{t('repositoryWorktree')}</span> : null}
       <RepositoryControls sessionId={sessionId} repository={repository} running={running} t={t} report={report} openDiff={() => openDiff()} {...(submitPrompt === undefined ? {} : { submitPrompt })} {...(deleteWorkspace === undefined ? {} : { deleteWorkspace })} />
     </div>
   )
@@ -935,18 +953,26 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
           {others.length === 0 ? null : (
             <>
               <div style={styles.dockSection} className="dshClaudeDockSection">{t('dockOtherCheckouts')}</div>
-              {others.map(item => (
-                <LinkedRepositoryBar
-                  key={repositoryKey(item)}
-                  sessionId={sessionId}
-                  repository={item}
-                  running={running}
-                  t={t}
-                  openDiff={openDiff}
-                  report={report}
-                  {...(submitPrompt === undefined ? {} : { submitPrompt })}
-                />
-              ))}
+              {unsettled.map(linkedRow)}
+              {settled.length < 2 ? settled.map(linkedRow) : (
+                <>
+                  <button
+                    type="button"
+                    style={styles.dockFold}
+                    className="dshClaudeDockFold"
+                    aria-expanded={settledOpen}
+                    data-dsh-claude-merged-fold={settledOpen ? 'open' : 'closed'}
+                    onClick={() => { setSettledOpen(!settledOpen) }}
+                  >
+                    <span style={{ ...styles.dockDot, ...styles.dockDotTone.merged }} />
+                    <span style={styles.dockFoldLabel}>{t('dockMergedFold', { count: settled.length })}</span>
+                    <span style={{ display: 'inline-flex', marginLeft: 'auto', transform: settledOpen ? 'rotate(180deg)' : 'none' }}>
+                      <IconChevronDownOutlineRegular />
+                    </span>
+                  </button>
+                  {settledOpen ? settled.map(linkedRow) : null}
+                </>
+              )}
             </>
           )}
           {loop?.goal === undefined ? null : (
@@ -993,7 +1019,13 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
         </span>
         <span style={styles.dockOthers}>
           {shown.map(item => <DockChip key={repositoryKey(item)} repository={item} t={t} />)}
-          {others.length > shown.length ? <span style={styles.dockMore}>+{others.length - shown.length}</span> : null}
+          {unsettled.length > shown.length ? <span style={styles.dockMore}>+{unsettled.length - shown.length}</span> : null}
+          {settled.length === 0 ? null : (
+            <span style={styles.dockChip} data-dsh-claude-merged-count="">
+              <span style={{ ...styles.dockDot, ...styles.dockDotTone.merged }} />
+              <span style={styles.dockChipLabel}>{settled.length}</span>
+            </span>
+          )}
         </span>
         <span style={styles.dockRight}>
           <GoalChip loop={loop} t={t} />

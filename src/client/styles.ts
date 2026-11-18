@@ -1492,6 +1492,36 @@ export const dockPanel: CSSProperties = {
   ...dockSurface,
 }
 
+/** The one row that stands for every merged checkout until it is opened. */
+export const dockFold: CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  minHeight: 30,
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '4px 12px',
+  border: 0,
+  borderRadius: 8,
+  background: 'transparent',
+  color: 'var(--dsw-alias-label-secondary)',
+  font: 'inherit',
+  fontSize: 13,
+  lineHeight: '20px',
+  textAlign: 'left',
+  cursor: 'pointer',
+}
+
+export const dockFoldLabel: CSSProperties = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  color: '#a78bfa',
+  fontWeight: 600,
+}
+
 export const dockSection: CSSProperties = {
   padding: '6px 10px 2px',
   fontSize: 11,
@@ -1752,6 +1782,10 @@ export const repositoryAutoFixCss = `
 
 .dshClaudeDockPanel {
   scrollbar-width: thin;
+  overflow-x: hidden;
+}
+.dshClaudeDockFold:hover {
+  background: color-mix(in srgb, currentColor 5%, transparent) !important;
 }
 /* The panel is a column with a height limit: left to shrink, its rows are
    squeezed below their content and draw over each other once they wrap. */
@@ -1783,9 +1817,14 @@ export const repositoryAutoFixCss = `
     row-gap: 2px;
     font-size: 12px !important;
   }
+  /* The checkout kind is the first thing to go when a row has no room. */
+  .dshClaudeDockPanel [data-dsh-claude-worktree-label] {
+    display: none !important;
+  }
   /* A linked row's controls shrink and clip before the row would wrap;
      at this width they take their own line instead. */
-  .dshClaudeDockPanel > div[data-dsh-claude-linked-repository] > :last-child {
+  .dshClaudeDockPanel > div[data-dsh-claude-linked-repository] > :last-child,
+  .dshClaudeDockPanel > div[data-dsh-claude-own-repository] > :last-child {
     flex: 1 0 auto !important;
     overflow: visible !important;
   }
