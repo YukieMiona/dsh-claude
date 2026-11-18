@@ -237,17 +237,37 @@ export function registerClaudeProjectionRoute(
     }
   }
 
-  const assembleMeta = async (sessionId: string, activities?: readonly ClaudeActivityEvent[]): Promise<ProjectionMeta> => {
+  const assembleMeta = async (
+    sessionId: string,
+    activities?: readonly ClaudeActivityEvent[],
+    /** Called once the session's own repository and mode are known, before
+     *  the other checkouts are. Those cost a git chain and a network call
+     *  each; measured at 34 s for nine, during which a session that was
+     *  otherwise ready showed no git bar at all. */
+    onOwn?: (meta: ProjectionMeta) => void,
+  ): Promise<ProjectionMeta> => {
     const meta = localMeta(sessionId)
     if (!meta.owned) {
       lastProbed.delete(sessionId)
       return meta
     }
-    const [repository, repositories, permissionMode] = await Promise.all([
+    const others = extraRepositoriesForSession(sessionId, activities ?? (await sidecar.read(sessionId)).activities)
+    // Attached now, so a failure here is never an unhandled rejection while the own probe is awaited.
+    others.catch(() => undefined)
+    const [repository, permissionMode] = await Promise.all([
       repositoryForSession(sessionId),
-      extraRepositoriesForSession(sessionId, activities ?? (await sidecar.read(sessionId)).activities),
       permissionModeForSession(sessionId),
     ])
+    if (onOwn !== undefined) {
+      const known = lastProbed.get(sessionId)?.repositories
+      onOwn({
+        ...meta,
+        ...(repository === undefined ? {} : { repository }),
+        ...(known === undefined ? {} : { repositories: known }),
+        ...(permissionMode === undefined ? {} : { permissionMode }),
+      })
+    }
+    const repositories = await others
     const probed = {
       ...meta,
       ...(repository === undefined ? {} : { repository }),
@@ -308,9 +328,11 @@ export function registerClaudeProjectionRoute(
       // Where the notification stream stands as of this read, so the first
       // delta after this line has a number to be contiguous with.
       writeLine({ type: 'snapshot', session: sessionId, seq: sidecar.sequence(sessionId), ...envelope(projection, meta, 'recent') })
-      const probed = await assembleMeta(sessionId, projection.activities)
-      if (closed || JSON.stringify(probed) === JSON.stringify(metas.get(sessionId))) return
-      writeMeta(sessionId, probed)
+      const writeIfNew = (next: ProjectionMeta): void => {
+        if (closed || JSON.stringify(next) === JSON.stringify(metas.get(sessionId))) return
+        writeMeta(sessionId, next)
+      }
+      writeIfNew(await assembleMeta(sessionId, projection.activities, writeIfNew))
     }
     // Subscribe every lane synchronously, before the first await: a delta that
     // lands while the snapshots are still assembling belongs to this carrier.

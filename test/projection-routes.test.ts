@@ -167,8 +167,11 @@ describe('Claude sidecar projection route', () => {
     await settled()
     expect(lines(fresh)).toEqual([
       expect.objectContaining({ type: 'snapshot', session: 'session/b' }),
+      // The session's own repository goes out before the other checkouts are probed.
+      expect.objectContaining({ type: 'meta', session: 'session/b', repository: expect.objectContaining({ root: '/a' }) }),
       expect.objectContaining({ type: 'meta', session: 'session/b', repository: expect.objectContaining({ root: '/a' }), repositories: [expect.objectContaining({ root: '/b' })] }),
     ])
+    expect(lines(fresh)[1]).not.toHaveProperty('repositories')
     for (const callback of fresh.closeHandlers) callback()
     await freshPending
     for (const callback of res.closeHandlers) callback()
