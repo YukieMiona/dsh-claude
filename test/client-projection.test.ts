@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ClaudeProjectionStore,
+  CARRIER_CLIENT_ID,
   createClaudeProjectionSource,
   EMPTY_CLAUDE_PROJECTION,
   parseClaudeClientProjection,
@@ -178,7 +179,7 @@ describe('Claude client sidecar projection', () => {
     await flush()
 
     expect(opened).toEqual([
-      `${CLAUDE_PROJECTION_PATH}/multi?sessions=${sessions.map(encodeURIComponent).join(',')}`,
+      `${CLAUDE_PROJECTION_PATH}/multi?sessions=${sessions.map(encodeURIComponent).join(',')}&client=${CARRIER_CLIENT_ID}`,
     ])
     // One carrier, still demultiplexed: each session sees only its own lines.
     stream.push('session-3', { ...valid, type: 'snapshot' })
@@ -373,7 +374,7 @@ describe('Claude client sidecar projection', () => {
     const unsubscribe = source.subscribe(listener)
     await flush()
     // The session id reaches the carrier encoded, as one lane of the multiplex.
-    expect(opened[0]).toBe(`${CLAUDE_PROJECTION_PATH}/multi?sessions=${encodeURIComponent('session/a')}`)
+    expect(opened[0]).toBe(`${CLAUDE_PROJECTION_PATH}/multi?sessions=${encodeURIComponent('session/a')}&client=${CARRIER_CLIENT_ID}`)
     stream.push('session/a', {
       ...valid,
       type: 'snapshot',
@@ -628,5 +629,69 @@ describe('repositories list', () => {
     const over = parseClaudeClientProjection({ ...valid, repositories: Array.from({ length: MAX_EXTRA_REPOSITORIES + 5 }, (_unused, index) => repository(index)) })
     expect(over.repositories).toHaveLength(MAX_EXTRA_REPOSITORIES)
     expect(over.activities).toHaveLength(1)
+  })
+})
+
+describe('carrier manners', () => {
+  const page = () => {
+    const listeners: Array<() => void> = []
+    const state = { hidden: false }
+    return {
+      document: {
+        get hidden() { return state.hidden },
+        addEventListener: (_type: 'visibilitychange', listener: () => void) => { listeners.push(listener) },
+        removeEventListener: () => {},
+      },
+      show(visible: boolean) { state.hidden = !visible; for (const listener of listeners) listener() },
+    }
+  }
+
+  it('names the page in the carrier request', async () => {
+    const opened: string[] = []
+    const store = new ClaudeProjectionStore({ settleMs: 0, open: async (path) => { opened.push(path); return carrier().reader } })
+    store.source('s1').subscribe(() => {})
+    await vi.waitFor(() => { expect(opened).toHaveLength(1) })
+    expect(CARRIER_CLIENT_ID).toMatch(/^[0-9a-f]{24}$/)
+    expect(opened[0]).toContain(`&client=${CARRIER_CLIENT_ID}`)
+    store.dispose()
+  })
+
+  it('lets the carrier go once the page has been hidden a while, and reopens it when shown', async () => {
+    const tab = page()
+    const opened: string[] = []
+    const signals: AbortSignal[] = []
+    const store = new ClaudeProjectionStore({
+      settleMs: 0, hiddenGraceMs: 20, retryDelayMs: 5, document: tab.document,
+      open: async (path, cancel) => { opened.push(path); signals.push(cancel); return carrier().reader },
+    })
+    store.source('s1').subscribe(() => {})
+    await vi.waitFor(() => { expect(opened).toHaveLength(1) })
+    // A glance away is not worth a reconnect.
+    tab.show(false)
+    tab.show(true)
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect(signals[0]?.aborted).toBe(false)
+    tab.show(false)
+    await vi.waitFor(() => { expect(signals[0]?.aborted).toBe(true) })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect(opened).toHaveLength(1)
+    tab.show(true)
+    await vi.waitFor(() => { expect(opened).toHaveLength(2) })
+    store.dispose()
+  })
+
+  it('waits longer between reconnects while carriers keep dying young', async () => {
+    const opened: number[] = []
+    const store = new ClaudeProjectionStore({
+      settleMs: 0, retryDelayMs: 20, maxRetryDelayMs: 80,
+      open: async () => { opened.push(Date.now()); const next = carrier(); next.close(); return next.reader },
+    })
+    store.source('s1').subscribe(() => {})
+    await vi.waitFor(() => { expect(opened.length).toBeGreaterThanOrEqual(5) }, { timeout: 2_000 })
+    store.dispose()
+    const gaps = opened.slice(1).map((at, index) => at - (opened[index] as number))
+    expect(gaps[0]).toBeGreaterThanOrEqual(15)
+    expect(gaps[2]).toBeGreaterThanOrEqual(70)
+    expect(gaps[3]).toBeLessThan(200)
   })
 })

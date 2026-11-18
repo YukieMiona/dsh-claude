@@ -490,3 +490,15 @@ describe('trimmed history', () => {
     expect(sent.filter(item => item.detail !== undefined).map(item => item.kind)).toEqual(['tool-call'])
   })
 })
+
+describe('carrier identity', () => {
+  it('admits each page under its own key, and never shares one between pages that give none', async () => {
+    const { carrierKey, MAX_PROJECTION_CARRIERS } = await import('../src/projection-routes.ts')
+    const url = (query: string) => new URL(`http://localhost${CLAUDE_PROJECTION_PATH}/multi?sessions=a${query}`)
+    expect(carrierKey(url('&client=abcdef0123456789'))).toBe(carrierKey(url('&client=abcdef0123456789')))
+    expect(carrierKey(url('&client=abcdef0123456789'))).not.toBe(carrierKey(url('&client=9876543210fedcba')))
+    expect(carrierKey(url(''))).not.toBe(carrierKey(url('')))
+    expect(carrierKey(url('&client=../x'))).not.toBe(carrierKey(url('&client=../x')))
+    expect(MAX_PROJECTION_CARRIERS).toBeGreaterThan(1)
+  })
+})

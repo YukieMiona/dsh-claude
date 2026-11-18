@@ -47,6 +47,23 @@ export const EMPTY_CLAUDE_PROJECTION: ClaudeClientProjection = {
 }
 
 const RETRY_DELAY_MS = 2_000
+/** The retry delay doubles while connections keep dying young, up to this. */
+const MAX_RETRY_DELAY_MS = 60_000
+/** A carrier that lived this long was healthy; the next failure starts over at the short delay. */
+const HEALTHY_CARRIER_MS = 15_000
+/** How long a hidden page keeps its carrier before letting it go. */
+const HIDDEN_GRACE_MS = 60_000
+
+function randomClientId(): string {
+  const bytes = new Uint8Array(12)
+  const source = (globalThis as { crypto?: { getRandomValues?: (array: Uint8Array) => Uint8Array } }).crypto
+  if (typeof source?.getRandomValues === 'function') source.getRandomValues(bytes)
+  else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256)
+  return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+/** This page's name for its carrier, so the Host can tell its reconnect from another page's. */
+export const CARRIER_CLIENT_ID = randomClientId()
 /** Floor between carrier reopens forced by a desync. A carrier that is losing
  *  lines must not be answered with a reconnect per lost line. */
 const RESYNC_COOLDOWN_MS = 5_000
@@ -271,6 +288,13 @@ export interface ClaudeProjectionSource extends HostObservable<ClaudeClientProje
   dispose(): void
   /** Apply one NDJSON line the store demultiplexed to this session. */
   feed(line: string): void
+}
+
+/** The part of `document` the carrier reads. */
+export interface ClaudeCarrierDocument {
+  readonly hidden?: boolean
+  addEventListener: (type: 'visibilitychange', listener: () => void) => void
+  removeEventListener?: (type: 'visibilitychange', listener: () => void) => void
 }
 
 function isAbort(error: unknown): boolean {
@@ -720,6 +744,12 @@ export class ClaudeProjectionStore {
   #settle: ReturnType<typeof setTimeout> | undefined
   #running = false
   #disposed = false
+  /** Set while the page has been hidden long enough to give the carrier up. */
+  #paused = false
+  #hiddenTimer: ReturnType<typeof setTimeout> | undefined
+  #unwatchVisibility: (() => void) | undefined
+  readonly #maxRetryDelayMs: number
+  readonly #hiddenGraceMs: number
 
   constructor(options: {
     open?: (path: string, cancel: AbortSignal) => Promise<ReadableStreamDefaultReader<Uint8Array>>
@@ -728,9 +758,16 @@ export class ClaudeProjectionStore {
     /** Where a desync is reported; the DSH log by way of client diagnostics. */
     report?: (kind: string, detail: string) => void
     resyncCooldownMs?: number
+    maxRetryDelayMs?: number
+    hiddenGraceMs?: number
+    /** The page whose visibility decides whether the carrier is worth holding. */
+    document?: ClaudeCarrierDocument
   } = {}) {
     this.#open = options.open ?? ((path, cancel) => pluginProjectionStream(path, cancel))
     this.#retryDelayMs = options.retryDelayMs ?? RETRY_DELAY_MS
+    this.#maxRetryDelayMs = options.maxRetryDelayMs ?? Math.max(MAX_RETRY_DELAY_MS, this.#retryDelayMs)
+    this.#hiddenGraceMs = options.hiddenGraceMs ?? HIDDEN_GRACE_MS
+    this.#watchVisibility(options.document ?? (globalThis as { document?: ClaudeCarrierDocument }).document)
     this.#settleMs = options.settleMs ?? SUBSCRIPTION_SETTLE_MS
     this.#report = options.report ?? (() => {})
     this.#resyncCooldownMs = options.resyncCooldownMs ?? RESYNC_COOLDOWN_MS
@@ -763,8 +800,43 @@ export class ClaudeProjectionStore {
     this.#reopen()
   }
 
+  /** A page nobody is looking at needs no live transcript. Left open, its
+   *  carrier kept reconnecting and re-downloading snapshots for as long as the
+   *  tab existed; it now lets go after a grace and reopens when shown again,
+   *  when a fresh snapshot restates whatever it missed. */
+  #watchVisibility(page: ClaudeCarrierDocument | undefined): void {
+    if (page === undefined || typeof page.addEventListener !== 'function') return
+    const changed = (): void => {
+      if (this.#disposed) return
+      if (page.hidden === true) {
+        if (this.#hiddenTimer !== undefined || this.#paused) return
+        const timer = setTimeout(() => {
+          this.#hiddenTimer = undefined
+          if (this.#disposed || page.hidden !== true) return
+          this.#paused = true
+          this.#controller?.abort()
+          this.#controller = undefined
+        }, this.#hiddenGraceMs)
+        ;(timer as { unref?: () => void }).unref?.()
+        this.#hiddenTimer = timer
+        return
+      }
+      if (this.#hiddenTimer !== undefined) clearTimeout(this.#hiddenTimer)
+      this.#hiddenTimer = undefined
+      if (!this.#paused) return
+      this.#paused = false
+      this.#reopen()
+    }
+    page.addEventListener('visibilitychange', changed)
+    this.#unwatchVisibility = () => { page.removeEventListener?.('visibilitychange', changed) }
+    changed()
+  }
+
   dispose(): void {
     this.#disposed = true
+    if (this.#hiddenTimer !== undefined) clearTimeout(this.#hiddenTimer)
+    this.#hiddenTimer = undefined
+    this.#unwatchVisibility?.()
     if (this.#settle !== undefined) clearTimeout(this.#settle)
     this.#settle = undefined
     this.#controller?.abort()
@@ -806,24 +878,27 @@ export class ClaudeProjectionStore {
   #reopen(): void {
     this.#controller?.abort()
     this.#controller = undefined
-    if (this.#disposed || this.#wanted.size === 0) return
+    if (this.#disposed || this.#paused || this.#wanted.size === 0) return
     void this.#run()
   }
 
   async #run(): Promise<void> {
     if (this.#running) return
     this.#running = true
+    /** Connections in a row that died young; each doubles the wait before the next. */
+    let young = 0
     try {
-      while (!this.#disposed && this.#wanted.size > 0) {
+      while (!this.#disposed && !this.#paused && this.#wanted.size > 0) {
         const controller = new AbortController()
         this.#controller = controller
         const lanes = this.#lanes()
+        const openedAt = Date.now()
         // Set when a reopen interrupts this carrier, to tell a deliberate
         // swap apart from a connection that failed on its own.
         let superseded = false
         try {
           const reader = await this.#open(
-            `${CLAUDE_PROJECTION_PATH}/multi?sessions=${lanes.map(encodeURIComponent).join(',')}`,
+            `${CLAUDE_PROJECTION_PATH}/multi?sessions=${lanes.map(encodeURIComponent).join(',')}&client=${CARRIER_CLIENT_ID}`,
             controller.signal,
           )
           this.#carrierFailing = false
@@ -863,11 +938,15 @@ export class ClaudeProjectionStore {
         } finally {
           if (this.#controller === controller) this.#controller = undefined
         }
-        if (this.#disposed || this.#wanted.size === 0) return
+        if (this.#disposed || this.#paused || this.#wanted.size === 0) return
         // A deliberate reopen is not a failed connection: re-read the lane set
         // now rather than making the user wait out the retry backoff.
         if (superseded) continue
-        await delay(this.#retryDelayMs)
+        // A carrier that keeps being closed moments after it opens is being
+        // closed by something a quick retry will not fix, and every retry
+        // costs a whole snapshot. Wait longer each time.
+        young = Date.now() - openedAt >= HEALTHY_CARRIER_MS ? 0 : young + 1
+        await delay(Math.min(this.#maxRetryDelayMs, this.#retryDelayMs * 2 ** Math.max(0, young - 1)))
       }
     } finally {
       this.#running = false

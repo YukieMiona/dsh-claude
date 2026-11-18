@@ -22,6 +22,19 @@ const MULTI_SEGMENT = 'multi'
 /** Sessions whose last probed metadata is kept for a later carrier. */
 const MAX_REMEMBERED_SESSIONS = 64
 
+/** How many pages may hold a carrier at once; past it the oldest is closed. */
+export const MAX_PROJECTION_CARRIERS = 8
+let anonymousCarriers = 0
+
+/** The identity a carrier is admitted under: the page's own, when it gives one. */
+export function carrierKey(url: URL): string {
+  const client = url.searchParams.get('client') ?? ''
+  if (/^[A-Za-z0-9_-]{8,64}$/u.test(client)) return `${MULTI_SEGMENT}:${client}`
+  // A page that predates the parameter: never share a key, or the eviction returns.
+  anonymousCarriers += 1
+  return `${MULTI_SEGMENT}:anonymous-${anonymousCarriers}`
+}
+
 type ProjectionTarget =
   | { readonly kind: 'snapshot'; readonly sessionId: string }
   | { readonly kind: 'multi'; readonly sessionIds: readonly string[] }
@@ -437,9 +450,14 @@ export function registerClaudeProjectionRoute(
     kind: 'prefix',
     path: CLAUDE_PROJECTION_PATH,
     methods: ['GET'],
-    // One carrier. A reconnect supersedes the old one rather than stacking.
-    maxConcurrent: 1,
-    streamKey: () => MULTI_SEGMENT,
+    // One carrier per page, not one in all. Under a single shared key two
+    // pages (a second tab, a second device) closed each other's carrier in
+    // turn: each reconnected two seconds later and was sent a whole snapshot
+    // again, which measured about 480 MB an hour on an idle tablet. A page
+    // names itself, so its own reconnect still supersedes its own old carrier;
+    // the cap keeps a teardown bug from becoming an unbounded leak.
+    maxConcurrent: MAX_PROJECTION_CARRIERS,
+    streamKey: carrierKey,
     handler: async (res, io) => {
       const target = targetFromUrl(io.url)
       if (target === undefined) {
