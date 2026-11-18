@@ -506,3 +506,34 @@ describe('pull request lookup by number', () => {
     await expect(service.inspectPullRequest('/session', 'org/repo-b', 1)).resolves.toEqual({ status: 'unavailable', cwd: '/session' })
   })
 })
+
+describe('linked checkouts', () => {
+  const ready = (state: 'open' | 'merged', dirty = false) => ({
+    status: 'ready' as const, cwd: '/w', root: '/w', branch: 'fix', detached: false, dirty,
+    pullRequest: { number: 7, url: 'https://github.com/a/b/pull/7', title: 't', state, draft: false, checks: 'none' as const, review: 'none' as const },
+  })
+
+  it('stops re-probing a checkout whose pull request is merged and clean, until an action invalidates it', async () => {
+    const service = new RepositoryStatusService(runtime([]), 0)
+    const inspect = vi.spyOn(service, 'inspect')
+    inspect.mockResolvedValue(ready('merged') as never)
+    await service.inspectLinked('/w')
+    await service.inspectLinked('/w')
+    expect(inspect).toHaveBeenCalledTimes(1)
+    service.invalidate('/w')
+    await service.inspectLinked('/w')
+    expect(inspect).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps probing a checkout that is still open or has uncommitted work', async () => {
+    const service = new RepositoryStatusService(runtime([]), 0)
+    const inspect = vi.spyOn(service, 'inspect')
+    inspect.mockResolvedValue(ready('open') as never)
+    await service.inspectLinked('/w')
+    await service.inspectLinked('/w')
+    inspect.mockResolvedValue(ready('merged', true) as never)
+    await service.inspectLinked('/w')
+    await service.inspectLinked('/w')
+    expect(inspect).toHaveBeenCalledTimes(4)
+  })
+})

@@ -18,6 +18,8 @@ const GIT_TIMEOUT_MS = 5_000
 const GH_TIMEOUT_MS = 8_000
 const CACHE_TTL_MS = 5_000
 const PULL_REQUEST_TTL_FACTOR = 12
+/** How long a linked checkout whose pull request is merged is believed without asking again. */
+export const SETTLED_CHECKOUT_TTL_MS = 10 * 60_000
 const MAX_TEXT_CHARS = 1_024
 const MAX_CONFLICT_PATHS = 100
 const PULL_REQUEST_FIELDS = 'number,title,url,state,isDraft,reviewDecision,mergeStateStatus,mergedAt,statusCheckRollup,author,createdAt,baseRefName,headRefName,additions,deletions,changedFiles'
@@ -366,6 +368,7 @@ export class RepositoryStatusService {
   readonly #cacheTtlMs: number
   readonly #cache = new Map<string, { expiresAt: number; value: Promise<RepositoryStatus> }>()
   readonly #lastReady = new Map<string, RepositoryStatus>()
+  readonly #settled = new Map<string, { expiresAt: number; value: RepositoryStatus }>()
   #gitExecutable?: Promise<string>
   #ghExecutable?: Promise<string | undefined>
   readonly #roots = new Map<string, Promise<string | undefined>>()
@@ -385,6 +388,23 @@ export class RepositoryStatusService {
     this.#cache.set(cwd, { expiresAt: Date.now() + this.#cacheTtlMs, value })
     void value.catch(() => this.#cache.delete(cwd))
     return value
+  }
+
+  /** `inspect` for a checkout the session only passed through. Once its pull
+   *  request is merged and nothing is left uncommitted, nothing about it is
+   *  going to change, yet every sweep paid a git chain and a GitHub call for
+   *  it: nine such checkouts took 34 s. A settled answer is kept for a while;
+   *  an action on the checkout invalidates it like any other. */
+  async inspectLinked(root: string, signal?: AbortSignal): Promise<RepositoryStatus> {
+    const known = this.#settled.get(root)
+    if (known !== undefined && known.expiresAt > Date.now()) return known.value
+    const status = await this.inspect(root, signal)
+    if (status.status === 'ready' && status.pullRequest?.state === 'merged' && status.dirty !== true) {
+      this.#settled.set(root, { expiresAt: Date.now() + SETTLED_CHECKOUT_TTL_MS, value: status })
+    } else {
+      this.#settled.delete(root)
+    }
+    return status
   }
 
   /** One pull request by number, as the checkout-shaped status the panels
@@ -439,6 +459,7 @@ export class RepositoryStatusService {
   invalidate(cwd: string): void {
     this.#cache.delete(cwd)
     this.#lastReady.delete(cwd)
+    this.#settled.delete(cwd)
     // An action through a clone can be on a pull request read by number (a
     // linked merge); which one is not recorded, and there are only a handful.
     for (const key of this.#cache.keys()) if (key.startsWith('gh:')) this.#cache.delete(key)
@@ -465,6 +486,7 @@ export class RepositoryStatusService {
     this.#roots.clear()
     this.#cache.clear()
     this.#lastReady.clear()
+    this.#settled.clear()
   }
 
   #stabilize(cwd: string, next: RepositoryStatus): RepositoryStatus {

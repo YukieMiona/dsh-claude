@@ -660,7 +660,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       if (cwd === undefined) return []
       const [own, ownStatus] = await Promise.all([repositoryStatus.rootOf(cwd), repositoryStatus.inspect(cwd)])
       const roots = await touchedRepositoryRoots(touchedFilePaths(activities), own ?? cwd, directory => repositoryStatus.rootOf(directory), MAX_EXTRA_REPOSITORIES)
-      const probed = await Promise.all(roots.map(root => repositoryStatus.inspect(root)))
+      const probed = await Promise.all(roots.map(root => repositoryStatus.inspectLinked(root)))
       const checkouts = probed.filter(status => linkedRepositoryShown(status))
       // Pull requests the log names that no linked checkout is sitting on any
       // more: the checkout moved on, the pull request did not. A clone of the
