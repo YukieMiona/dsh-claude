@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ClaudeSidecarRepository } from '../src/sidecar.ts'
-import { CLAUDE_PROJECTION_PATH } from '../src/constants.ts'
+import { CLAUDE_HISTORY_PATH, CLAUDE_PROJECTION_PATH } from '../src/constants.ts'
 import { registerClaudeProjectionRoute } from '../src/projection-routes.ts'
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>
@@ -11,15 +11,17 @@ function context(): Context & { handler: Handler } {
   const target = { handler: async () => {} } as { handler: Handler }
   return Object.assign(target, {
     effect: (register: () => unknown, _label?: string) => {
-      const route = register() as { handler: Handler }
-      target.handler = route.handler
+      const route = register() as { handler: Handler; kind?: string }
+      // The history route registers beside the carrier; these tests drive the carrier.
+      if (route.kind !== 'exact') target.handler = route.handler
     },
     // The projection route is a stream route: registerPluginRoute reports a
     // failed stream through the logger rather than the socket.
     logger: { info: () => {}, warn: () => {} },
     webServer: {
       register: (route: { kind: string; path: string; handler: Handler }) => {
-        expect(route).toMatchObject({ kind: 'prefix', path: CLAUDE_PROJECTION_PATH })
+        if (route.kind === 'prefix') expect(route).toMatchObject({ kind: 'prefix', path: CLAUDE_PROJECTION_PATH })
+        else expect(route).toMatchObject({ kind: 'exact', path: CLAUDE_HISTORY_PATH })
         return route
       },
     },
@@ -437,5 +439,51 @@ describe('Claude sidecar projection route', () => {
     const timer = setIntervals.mock.results.at(-1)?.value
     expect(timer).toBeDefined()
     expect(clearIntervals).toHaveBeenCalledWith(timer)
+  })
+})
+
+describe('trimmed history', () => {
+  const turn = (number: number, count: number) => Array.from({ length: count }, (_unused, ordinal) => ({ turn: number, step: 1, ordinal, kind: 'status' as const }))
+
+  it('sends a short history whole, and only the newest turns of a long one', async () => {
+    const { recentActivities, PROJECTION_RECENT_TURNS } = await import('../src/projection-routes.ts')
+    const short = [...turn(1, 10), ...turn(2, 10)]
+    expect(recentActivities(short)).toEqual({ activities: short })
+    const long = [1, 2, 3, 4, 5, 6, 7].flatMap(number => turn(number, 200))
+    const recent = recentActivities(long)
+    expect(recent.historyBefore).toBe(7 - PROJECTION_RECENT_TURNS + 1)
+    expect(new Set(recent.activities.map(activity => activity.turn))).toEqual(new Set([4, 5, 6, 7]))
+    const fewTurns = [...turn(1, 500), ...turn(2, 500)]
+    expect(recentActivities(fewTurns)).toEqual({ activities: fewTurns })
+  })
+
+  it('hands out older turns newest first, whole turns at a time, until none remain', async () => {
+    const { historyChunk } = await import('../src/projection-routes.ts')
+    const all = [...turn(1, 500), ...turn(2, 500), ...turn(3, 200), ...turn(4, 50)]
+    const first = historyChunk(all, 4)
+    expect(new Set(first.activities.map(activity => activity.turn))).toEqual(new Set([2, 3]))
+    expect(first.historyBefore).toBe(2)
+    const second = historyChunk(all, 2)
+    expect(second.activities).toHaveLength(500)
+    expect(second.historyBefore).toBeUndefined()
+    // One oversized turn still goes out, so the walk always ends.
+    expect(historyChunk([...turn(1, 3_000), ...turn(2, 5)], 2).activities).toHaveLength(3_000)
+    expect(historyChunk(all, 1)).toEqual({ activities: [] })
+  })
+
+  it('sends old task records at the weight new ones are stored', async () => {
+    const { wireActivities } = await import('../src/projection-routes.ts')
+    const task = (ordinal: number, phase: 'started' | 'updated' | 'completed', title: string, taskId = 't1') =>
+      ({ turn: 1, step: 1, ordinal, kind: 'subagent' as const, phase, taskId, title, detail: '{"raw":true}' })
+    const sent = wireActivities([
+      task(0, 'started', 'x'.repeat(5_000)),
+      task(1, 'updated', 'Running a'),
+      task(2, 'updated', 'Running b'),
+      task(3, 'updated', 'Other', 't2'),
+      task(4, 'completed', 'done'),
+      { turn: 1, step: 1, ordinal: 5, kind: 'tool-call' as const, detail: 'kept' },
+    ])
+    expect(sent.map(item => [item.ordinal, item.title?.length ?? 0])).toEqual([[0, 401], [2, 9], [3, 5], [4, 4], [5, 0]])
+    expect(sent.filter(item => item.detail !== undefined).map(item => item.kind)).toEqual(['tool-call'])
   })
 })

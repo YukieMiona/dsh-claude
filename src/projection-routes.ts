@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { ServerResponse } from 'node:http'
-import { CLAUDE_PROJECTION_PATH } from './constants.ts'
+import { CLAUDE_HISTORY_PATH, CLAUDE_PROJECTION_PATH } from './constants.ts'
 import { registerPluginRoute, type PluginRouteIo } from './http.ts'
 import { MAX_MULTIPLEX_SESSIONS } from './plugin-budget.ts'
 import type { ClaudeSidecarProjection, ClaudeSidecarRepository } from './sidecar.ts'
@@ -66,13 +66,89 @@ interface ProjectionMeta {
   readonly loop?: ClaudeLoopView
 }
 
-function envelope(projection: ClaudeSidecarProjection, meta: ProjectionMeta): Record<string, unknown> {
+/** A carrier's snapshot carries this many of the newest turns in full. */
+export const PROJECTION_RECENT_TURNS = 4
+/** A history this short is sent whole: trimming it would save nothing worth a second request. */
+export const PROJECTION_WHOLE_BELOW = 600
+/** Roughly how many activities one history request answers with. */
+export const PROJECTION_HISTORY_CHUNK = 800
+
+type Activities = ClaudeSidecarProjection['activities']
+
+const WIRE_TASK_LABEL_CHARS = 400
+
+/** Task records as they travel: one progress line per task, short labels and
+ *  no raw SDK frame. New records are stored this way already; this gives the
+ *  same weight to the history written before that. */
+export function wireActivities(activities: Activities): Activities {
+  const lastProgress = new Map<string, number>()
+  activities.forEach((activity, index) => {
+    if (activity.kind === 'subagent' && activity.phase === 'updated' && activity.taskId !== undefined) {
+      lastProgress.set(`${activity.turn}:${activity.step}:${activity.taskId}`, index)
+    }
+  })
+  const cap = (value: string | undefined): string | undefined => value !== undefined && value.length > WIRE_TASK_LABEL_CHARS
+    ? `${value.slice(0, WIRE_TASK_LABEL_CHARS)}…`
+    : value
+  const out: Activities[number][] = []
+  activities.forEach((activity, index) => {
+    if (activity.kind !== 'subagent') {
+      out.push(activity)
+      return
+    }
+    if (activity.phase === 'updated' && activity.taskId !== undefined
+      && lastProgress.get(`${activity.turn}:${activity.step}:${activity.taskId}`) !== index) return
+    const { detail: _detail, title, summary, ...rest } = activity
+    const shortTitle = cap(title)
+    const shortSummary = cap(summary)
+    out.push({
+      ...rest,
+      ...(shortTitle === undefined ? {} : { title: shortTitle }),
+      ...(shortSummary === undefined ? {} : { summary: shortSummary }),
+    })
+  })
+  return out
+}
+
+/** The newest turns of a history, and the turn older activity sits before.
+ *
+ *  A long session's whole history measured 5 MB, sent again on every
+ *  reconnect; a phone never finished loading it and showed neither new
+ *  messages nor the git bar. The page needs the recent turns to paint, and
+ *  fetches the rest in pieces afterwards. */
+export function recentActivities(activities: Activities): { activities: Activities; historyBefore?: number } {
+  if (activities.length <= PROJECTION_WHOLE_BELOW) return { activities }
+  const turns = [...new Set(activities.map(activity => activity.turn))].sort((left, right) => left - right)
+  if (turns.length <= PROJECTION_RECENT_TURNS) return { activities }
+  const cutoff = turns[turns.length - PROJECTION_RECENT_TURNS] as number
+  return { activities: wireActivities(activities.filter(activity => activity.turn >= cutoff)), historyBefore: cutoff }
+}
+
+/** One piece of older history: the newest whole turns before `before`. */
+export function historyChunk(activities: Activities, before: number): { activities: Activities; historyBefore?: number } {
+  const older = activities.filter(activity => activity.turn < before)
+  const turns = [...new Set(older.map(activity => activity.turn))].sort((left, right) => right - left)
+  let from = before
+  let count = 0
+  for (const turn of turns) {
+    const size = older.reduce((total, activity) => total + (activity.turn === turn ? 1 : 0), 0)
+    if (count > 0 && count + size > PROJECTION_HISTORY_CHUNK) break
+    from = turn
+    count += size
+  }
+  const chunk = older.filter(activity => activity.turn >= from)
+  return { activities: wireActivities(chunk), ...(older.length > chunk.length ? { historyBefore: from } : {}) }
+}
+
+function envelope(projection: ClaudeSidecarProjection, meta: ProjectionMeta, scope: 'whole' | 'recent' = 'whole'): Record<string, unknown> {
+  const shown = scope === 'recent' ? recentActivities(projection.activities) : { activities: projection.activities }
   return {
     schemaVersion: projection.schemaVersion,
     revision: projection.revision,
     owned: meta.owned,
     commands: meta.commands,
-    activities: projection.activities,
+    activities: shown.activities,
+    ...(shown.historyBefore === undefined ? {} : { historyBefore: shown.historyBefore }),
     ...(projection.tasks === undefined ? {} : { tasks: projection.tasks }),
     ...(projection.promptSuggestion === undefined ? {} : { promptSuggestion: projection.promptSuggestion }),
     ...(meta.repository === undefined ? {} : { repository: meta.repository }),
@@ -231,7 +307,7 @@ export function registerClaudeProjectionRoute(
       metas.set(sessionId, meta)
       // Where the notification stream stands as of this read, so the first
       // delta after this line has a number to be contiguous with.
-      writeLine({ type: 'snapshot', session: sessionId, seq: sidecar.sequence(sessionId), ...envelope(projection, meta) })
+      writeLine({ type: 'snapshot', session: sessionId, seq: sidecar.sequence(sessionId), ...envelope(projection, meta, 'recent') })
       const probed = await assembleMeta(sessionId, projection.activities)
       if (closed || JSON.stringify(probed) === JSON.stringify(metas.get(sessionId))) return
       writeMeta(sessionId, probed)
@@ -366,6 +442,22 @@ export function registerClaudeProjectionRoute(
         res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
         res.write(JSON.stringify({ error: 'projection unavailable' }))
       }
+    },
+  })
+
+  // Older turns, a piece at a time: `GET <path>?session=<id>&before=<turn>`.
+  registerPluginRoute(ctx, {
+    mode: 'unary',
+    kind: 'exact',
+    path: CLAUDE_HISTORY_PATH,
+    methods: ['GET'],
+    budget: 'fast',
+    handler: async io => {
+      const sessionId = io.url.searchParams.get('session') ?? ''
+      const before = Number(io.url.searchParams.get('before'))
+      if (!validSessionId(sessionId) || !Number.isInteger(before) || before < 0) return { status: 400, value: { error: 'invalid-request' } }
+      const projection = await sidecar.read(sessionId)
+      return { status: 200, value: historyChunk(projection.activities, before) }
     },
   })
 }

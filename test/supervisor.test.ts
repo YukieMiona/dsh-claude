@@ -902,6 +902,31 @@ describe('Claude supervisor', () => {
     }
   })
 
+  it('keeps one progress record per task and stores task labels short', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const runtime = supervisor(transport.create)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'deploy' })
+    const query = transport.queries[0]!
+    query.push(init())
+    const script = `cat > smoke.py <<'EOF'\n${'print(1)\n'.repeat(400)}EOF`
+    query.push({ type: 'system', subtype: 'task_started', task_id: 'task-1', description: script, task_type: 'local_bash', session_id: 'claude-session-1' } as SDKMessage)
+    for (const step of ['Running Read a', 'Running Read b', 'Running Bash c']) {
+      query.push({ type: 'system', subtype: 'task_progress', task_id: 'task-1', description: step, session_id: 'claude-session-1' } as SDKMessage)
+    }
+    query.push({ type: 'system', subtype: 'task_progress', task_id: 'task-2', description: 'Other task', session_id: 'claude-session-1' } as SDKMessage)
+    query.push(result('done'))
+    await collect(output)
+
+    const tasks = (await projection(runtime)).activities.filter(activity => activity.kind === 'subagent')
+    const progress = tasks.filter(activity => activity.phase === 'updated')
+    expect(progress.map(activity => [activity.taskId, activity.title])).toEqual([['task-1', 'Running Bash c'], ['task-2', 'Other task']])
+    expect(progress.every(activity => activity.detail === undefined)).toBe(true)
+    const started = tasks.find(activity => activity.phase === 'started')
+    expect(started?.title?.length).toBeLessThanOrEqual(401)
+    expect(started?.detail).toBeUndefined()
+  })
+
   it('preserves running tasks when the long-lived query re-emits system/init', async () => {
     const transport = factory()
     const owner = fakeAgent()

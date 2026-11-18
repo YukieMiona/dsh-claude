@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ClaudeProjectionStore,
+  createClaudeProjectionSource,
   EMPTY_CLAUDE_PROJECTION,
   parseClaudeClientProjection,
   selectStepActivities,
@@ -564,5 +565,54 @@ describe('Claude client sidecar projection', () => {
     stream.close()
     replacement.close()
     store.dispose()
+  })
+})
+
+describe('trimmed snapshots', () => {
+  const activity = (turn: number, ordinal = 0) => ({ turn, step: 1, ordinal, kind: 'warning' as const })
+  const settle = async (): Promise<void> => { for (let index = 0; index < 6; index += 1) await Promise.resolve() }
+
+  it('fetches older turns in pieces and keeps them across a later snapshot', async () => {
+    const requests: number[] = []
+    const source = createClaudeProjectionSource('s1', () => {}, () => {}, async (_session, before) => {
+      requests.push(before)
+      return before === 5 ? { activities: [activity(3), activity(4)], historyBefore: 3 } : { activities: [activity(1), activity(2)] }
+    })
+    source.subscribe(() => {})
+    source.feed(JSON.stringify({ ...valid, type: 'snapshot', seq: 1, activities: [activity(5), activity(6)], historyBefore: 5 }))
+    await settle()
+    expect(requests).toEqual([5, 3])
+    await vi.waitFor(() => { expect(source.getSnapshot().activities.map(item => item.turn)).toEqual([1, 2, 3, 4, 5, 6]) })
+
+    // A reconnect restates only the newest turns; nothing is fetched again.
+    source.feed(JSON.stringify({ ...valid, type: 'snapshot', seq: 9, activities: [activity(6), activity(7)], historyBefore: 6 }))
+    await settle()
+    expect(requests).toEqual([5, 3])
+    await vi.waitFor(() => { expect(source.getSnapshot().activities.map(item => item.turn)).toEqual([1, 2, 3, 4, 5, 6, 7]) })
+    source.dispose()
+  })
+
+  it('asks again after a failed fetch, and never for a whole snapshot', async () => {
+    let calls = 0
+    const source = createClaudeProjectionSource('s1', () => {}, () => {}, async () => {
+      calls += 1
+      if (calls === 1) throw new Error('offline')
+      return { activities: [activity(1)] }
+    })
+    source.subscribe(() => {})
+    source.feed(JSON.stringify({ ...valid, type: 'snapshot', seq: 1, activities: [activity(2)], historyBefore: 2 }))
+    await settle()
+    expect(calls).toBe(1)
+    source.feed(JSON.stringify({ ...valid, type: 'snapshot', seq: 2, activities: [activity(2)], historyBefore: 2 }))
+    await settle()
+    expect(calls).toBe(2)
+    await vi.waitFor(() => { expect(source.getSnapshot().activities.map(item => item.turn)).toEqual([1, 2]) })
+    source.dispose()
+
+    const whole = createClaudeProjectionSource('s2', () => {}, () => {}, async () => { calls += 1; return { activities: [] } })
+    whole.feed(JSON.stringify({ ...valid, type: 'snapshot', seq: 1 }))
+    await settle()
+    expect(calls).toBe(2)
+    whole.dispose()
   })
 })

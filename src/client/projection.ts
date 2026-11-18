@@ -4,11 +4,11 @@ import type { ClaudeCommandView } from '../command-bridge.ts'
 import type { RepositoryStatus } from '../repository-status.ts'
 import type { ReviewComment } from '../review-comments.ts'
 import type { ClaudeLoopView } from '../loop-schedule.ts'
-import { CLAUDE_PROJECTION_PATH, isClaudeRenderMode } from '../constants.ts'
+import { CLAUDE_HISTORY_PATH, CLAUDE_PROJECTION_PATH, isClaudeRenderMode } from '../constants.ts'
 import { MAX_MULTIPLEX_SESSIONS } from '../plugin-budget.ts'
 import { MAX_REWIND_RANGES, type ClaudeRewindRange } from '../rewind.ts'
 import { isClaudePermissionMode, isClaudePermissionSelector, type ClaudePermissionModeView, type ClaudePermissionSelector } from '../permission-mode.ts'
-import { pluginProjectionStream } from './plugin-transport.ts'
+import { pluginProjectionStream, pluginRead } from './plugin-transport.ts'
 
 export interface ClaudeClientProjection {
   readonly schemaVersion: 1
@@ -286,11 +286,31 @@ function delay(ms: number): Promise<void> {
  *  {@link ClaudeProjectionStore} now owns the single carrier and feeds each
  *  session's lines here. `onDemand` reports whether anyone is watching, which
  *  is what the store uses to decide which sessions the carrier subscribes to. */
+export interface ClaudeHistoryChunk {
+  readonly activities: readonly ClaudeActivityEvent[]
+  /** Present while still older turns remain on the Host. */
+  readonly historyBefore?: number
+}
+
+/** Ask the Host for the turns before `before`; the carrier's snapshot holds only the newest. */
+export async function fetchClaudeHistory(sessionId: string, before: number): Promise<ClaudeHistoryChunk> {
+  const value = await pluginRead<unknown>(CLAUDE_HISTORY_PATH, 'fast', undefined, { query: { session: sessionId, before: String(before) } })
+  const parsed = parseClaudeClientProjection({ schemaVersion: 1, revision: 0, owned: false, commands: [], activities: (value as { activities?: unknown } | undefined)?.activities })
+  const next = (value as { historyBefore?: unknown } | undefined)?.historyBefore
+  return { activities: parsed.activities, ...(nonNegativeInteger(next) ? { historyBefore: next } : {}) }
+}
+
 export function createClaudeProjectionSource(
   sessionId: string,
   onDemand: (active: boolean) => void = () => {},
   onDesync: (kind: string, detail: string) => void = () => {},
+  loadHistory: (sessionId: string, before: number) => Promise<ClaudeHistoryChunk> = fetchClaudeHistory,
 ): ClaudeProjectionSource {
+  /** The turn the next history request asks before; undefined when nothing older is owed. */
+  let historyBefore: number | undefined
+  /** Whether every turn older than the snapshot's is already held here. */
+  let historyHeld = false
+  let historyLoading = false
   let snapshot = EMPTY_CLAUDE_PROJECTION
   let revision = 0
   /** Last carrier line this reducer applied, by the server's count. Undefined
@@ -409,6 +429,30 @@ export function createClaudeProjectionSource(
     frame = undefined
   }
 
+  /** Fetch older turns a piece at a time, newest first, until none are owed. */
+  const loadOlder = (): void => {
+    if (disposed || historyLoading || historyBefore === undefined) return
+    historyLoading = true
+    const before = historyBefore
+    loadHistory(sessionId, before).then((chunk) => {
+      historyLoading = false
+      if (disposed) return
+      for (const activity of chunk.activities) {
+        // Never over a record the carrier has since restated or updated.
+        const held = byStep.get(stepKeyOf(activity.turn, activity.step))
+        if (held?.some(item => item.ordinal === activity.ordinal) !== true) upsertActivity(activity)
+      }
+      historyBefore = chunk.historyBefore
+      if (historyBefore === undefined) historyHeld = true
+      revision += 1
+      schedulePublish()
+      loadOlder()
+    }, () => {
+      // Left owed: the next snapshot line asks again.
+      historyLoading = false
+    })
+  }
+
   const schedulePublish = (): void => {
     if (disposed || frame !== undefined || listeners.size === 0) return
     const raf = (globalThis as { requestAnimationFrame?: (callback: () => void) => number }).requestAnimationFrame
@@ -515,7 +559,26 @@ export function createClaudeProjectionSource(
           permissionMode = next.permissionMode
           permissionSelector = next.permissionSelector
           loop = next.loop
-          reset(next.activities)
+          // A trimmed snapshot restates only the newest turns. Older turns
+          // already held stay: they are not restated, and fetching them again
+          // on every reconnect is the cost the trimming exists to avoid.
+          const trimmedBefore = nonNegativeInteger((event as { historyBefore?: unknown }).historyBefore) ? (event as { historyBefore: number }).historyBefore : undefined
+          const kept: ClaudeActivityEvent[] = []
+          if (trimmedBefore !== undefined) {
+            for (const entry of stepOrder) {
+              if (entry.turn >= trimmedBefore) break
+              for (const item of byStep.get(entry.key) ?? []) kept.push(item)
+            }
+          }
+          reset(trimmedBefore === undefined ? next.activities : [...kept, ...next.activities])
+          if (trimmedBefore === undefined) {
+            historyBefore = undefined
+            historyHeld = true
+          } else if (!historyHeld) {
+            // Continue from as far down as an earlier load got, else start here.
+            historyBefore = historyBefore === undefined ? trimmedBefore : Math.min(historyBefore, trimmedBefore)
+            queueMicrotask(loadOlder)
+          }
           break
         }
         case 'text':

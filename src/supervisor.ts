@@ -264,6 +264,8 @@ interface ActiveTurn {
    *  only draws a scheduler-fired turn: that turn's result is then its answer. */
   promptSent?: boolean
   cursor: ClaudeActivityCursor
+  /** Where each running task's progress line sits, by step and task id. */
+  progressOrdinals: Map<string, number>
   /** Last complete text block recorded per subagent call: the CLI re-sends a
    *  message's blocks as each one completes, and one copy is enough. */
   subagentText: Map<string, string>
@@ -462,6 +464,29 @@ function sdkUserMessage(prompt: SDKUserMessage['message']['content'], uuid: Retu
 /** Sent by the Host, not typed by the user. It used to forbid further tools,
  *  which stopped work that had only been waiting on a check: the model
  *  reported, then sat on unshipped changes until the user wrote again. */
+const TASK_ACTIVITY_LABEL_CHARS = 400
+const TASK_ACTIVITY_DETAIL_CHARS = 2_000
+
+/** A task record as it is stored: its label kept short, and the raw SDK frame
+ *  it came from dropped when it is only progress or is large. A whole shell
+ *  script as a title, repeated in the summary and again inside the frame, made
+ *  two thirds of a long session's history. */
+export function slimTaskActivity(activity: ClaudeActivityInput): ClaudeActivityInput {
+  if (activity.kind !== 'subagent') return activity
+  const cap = (value: unknown): unknown => typeof value === 'string' && value.length > TASK_ACTIVITY_LABEL_CHARS
+    ? `${value.slice(0, TASK_ACTIVITY_LABEL_CHARS)}…`
+    : value
+  const { detail, ...rest } = activity
+  const size = detail === undefined ? 0 : typeof detail === 'string' ? detail.length : (JSON.stringify(detail) ?? '').length
+  const keepDetail = detail !== undefined && activity.phase !== 'updated' && size <= TASK_ACTIVITY_DETAIL_CHARS
+  return {
+    ...rest,
+    ...(typeof rest.title === 'string' ? { title: cap(rest.title) as string } : {}),
+    ...(rest.summary === undefined ? {} : { summary: cap(rest.summary) }),
+    ...(keepDetail ? { detail } : {}),
+  }
+}
+
 const BACKGROUND_TASK_REPORT_PROMPT = [
   '[Automatic note from the DSH host, not a message from the user.]',
   'The background tasks launched by your preceding response have now all settled.',
@@ -1218,6 +1243,7 @@ export class ClaudeSupervisor {
     const active: ActiveTurn = {
       agent: request.agent,
       cursor,
+      progressOrdinals: new Map(),
       native: (request.renderMode ?? this.#config.renderMode ?? DEFAULT_CLAUDE_RENDER_MODE) === 'native',
       output: new AsyncQueue<ClaudeTurnStreamEvent>(),
       promptUuid,
@@ -2608,8 +2634,16 @@ export class ClaudeSupervisor {
     active.transcriptTextOrdinal = undefined
   }
 
-  async #appendActivity(active: ActiveTurn, activity: ClaudeActivityInput): Promise<void> {
-    const ordinal = active.cursor.nextOrdinal++
+  async #appendActivity(active: ActiveTurn, input: ClaudeActivityInput): Promise<void> {
+    const activity = slimTaskActivity(input)
+    // A task's progress line replaces its previous one. Kept as separate
+    // records, a long subagent left hundreds of them, and a session's history
+    // grew past what a phone could load.
+    const progressKey = activity.kind === 'subagent' && activity.phase === 'updated' && activity.taskId !== undefined
+      ? `${active.cursor.step}:${activity.taskId}`
+      : undefined
+    const ordinal = (progressKey === undefined ? undefined : active.progressOrdinals.get(progressKey)) ?? active.cursor.nextOrdinal++
+    if (progressKey !== undefined) active.progressOrdinals.set(progressKey, ordinal)
     await this.#sidecar.appendActivity(active.agent.id as string, {
       ...activity,
       // Stamp the renderer this record was produced for. The Client reads it
