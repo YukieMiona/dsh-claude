@@ -238,6 +238,43 @@ export const CLAUDE_MARKDOWN_ENHANCED_CSS = [
  *  Markdown render — cannot undo a choice boot or the settings panel made. */
 let styleTag: HTMLStyleElement | null = null
 let mode: ClaudeProseMode = DEFAULT_CLAUDE_PROSE_MODE
+/** The Host Markdown renderer's own root class, learned from a block this
+ *  package rendered through it. */
+let hostMarkdownClass: string | undefined
+
+/** Present on `<body>` while the session on screen is one this plugin drives. */
+export const CLAUDE_SESSION_ATTRIBUTE = 'data-dsh-claude-session'
+
+/** The prose palette for text the Host draws itself.
+ *
+ *  A turn's final answer is not in this package's transcript: the Host renders
+ *  it as the assistant message, outside the scope wrapper, so with the
+ *  enhanced palette on, the words were coloured while they streamed and went
+ *  plain the moment the turn ended. The Host draws it with the same Markdown
+ *  component, whose root class is known once this package has rendered one
+ *  block through it; the rules below reach it by that class, only while a
+ *  session this plugin drives is on screen. No class learned, no rules. */
+export function hostProseCss(rootClass: string | undefined): string {
+  if (rootClass === undefined || !/^[A-Za-z_][A-Za-z0-9_-]*$/u.test(rootClass)) return ''
+  const scope = `body[${CLAUDE_SESSION_ATTRIBUTE}] .${rootClass}`
+  return [
+    `${scope} :is(h1,h2,h3,h4,h5,h6){color:${PROSE.heading}}`,
+    `${scope} strong{color:${PROSE.bold}}`,
+    `${scope} em{color:${PROSE.italic}}`,
+    `${scope} li::marker{color:${PROSE.listMarker}}`,
+    `${scope} blockquote{border-left-color:${PROSE.quote};color:${PROSE.quote}}`,
+    `${scope} a{color:${PROSE.link}}`,
+    `${scope} :not(pre)>code{color:${PROSE.inlineCode}}`,
+  ].join('')
+}
+
+/** Remember the Host renderer's root class. Rewrites the sheet only when it changes. */
+export function learnHostMarkdownClass(className: string | undefined): void {
+  const first = className?.split(/\s+/u).find(token => token.length > 0)
+  if (first === undefined || first === hostMarkdownClass || first === CLAUDE_MARKDOWN_SCOPE) return
+  hostMarkdownClass = first
+  write()
+}
 
 function write(): void {
   if (typeof document === 'undefined') return
@@ -246,9 +283,11 @@ function write(): void {
     styleTag.dataset.dshClaudeMarkdownTheme = ''
     document.head.appendChild(styleTag)
   }
-  styleTag.textContent = mode === 'enhanced'
-    ? CLAUDE_MARKDOWN_THEME_CSS + CLAUDE_MARKDOWN_ENHANCED_CSS
+  const next = mode === 'enhanced'
+    ? CLAUDE_MARKDOWN_THEME_CSS + CLAUDE_MARKDOWN_ENHANCED_CSS + hostProseCss(hostMarkdownClass)
     : CLAUDE_MARKDOWN_THEME_CSS
+  // Called on every Markdown render: leave the sheet alone when nothing changed.
+  if (styleTag.textContent !== next) styleTag.textContent = next
 }
 
 /** Attach the sheet, keeping whatever mode is already set. Idempotent. */

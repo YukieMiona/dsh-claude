@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
-import { CLAUDE_MARKDOWN_SCOPE, ensureClaudeMarkdownTheme } from './markdown-theme.ts'
+import { CLAUDE_MARKDOWN_SCOPE, ensureClaudeMarkdownTheme, learnHostMarkdownClass } from './markdown-theme.ts'
 import type { ClaudeCodeSettingsKey } from './locales.ts'
 import type { FileMentions } from './file-mentions.ts'
 
@@ -52,5 +52,9 @@ export function ClaudeMarkdown({ text, labels, streaming, fileMentions }: {
   // The wrapper is the palette's scope and nothing else: `display:contents`
   // keeps it out of layout while custom properties still inherit through it.
   ensureClaudeMarkdownTheme()
-  return <div className={CLAUDE_MARKDOWN_SCOPE}><Renderer {...props} /></div>
+  // The renderer's root is the same element the Host draws a final answer
+  // with; its class is how the palette follows the answer out of this wrapper.
+  const scope = useRef<HTMLDivElement>(null)
+  useEffect(() => { learnHostMarkdownClass(scope.current?.firstElementChild?.getAttribute('class') ?? undefined) })
+  return <div className={CLAUDE_MARKDOWN_SCOPE} ref={scope}><Renderer {...props} /></div>
 }

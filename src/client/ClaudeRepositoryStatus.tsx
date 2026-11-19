@@ -14,6 +14,7 @@ import type { ClaudeCodeSettingsKey } from './locales.ts'
 import type { ClaudeClientProjection } from './projection.ts'
 import * as styles from './styles.ts'
 import { useLinkedRepositoriesMode, useIsMobile } from './linked-repositories-mode.ts'
+import { CLAUDE_SESSION_ATTRIBUTE } from './markdown-theme.ts'
 import { CLAUDE_COMPOSER_BAR_ATTRIBUTE } from './boot-check.ts'
 import { ClaudeGoalBar, ClaudeLoopBar, GoalChip, LoopCountdown } from './ClaudeLoopBar.tsx'
 import { ClaudeSendLater, SendLaterChip, type ScheduledSendItem } from './ClaudeSendLater.tsx'
@@ -883,6 +884,14 @@ export function ClaudeRepositoryStatus({ sessionId, useSessions, useClaudeProjec
   const mode = useLinkedRepositoriesMode()
   const [userOpen, setUserOpen] = useState<boolean | undefined>(undefined)
   const [settledOpen, setSettledOpen] = useState(false)
+  // Tells the stylesheet a plugin-driven session is on screen, so the prose
+  // palette can reach the answer the Host draws outside this package's markup.
+  const ownedOnScreen = projection.owned && !blank
+  useEffect(() => {
+    if (!ownedOnScreen || typeof document === 'undefined') return
+    document.body.setAttribute(CLAUDE_SESSION_ATTRIBUTE, '')
+    return () => { document.body.removeAttribute(CLAUDE_SESSION_ATTRIBUTE) }
+  }, [ownedOnScreen])
   const loop = projection.loop
   // The route answers with the new list at once; the projection catches up on
   // its next sweep, and from then on it is the one to believe again.

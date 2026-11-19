@@ -76,3 +76,16 @@ describe('Claude markdown palette', () => {
       .toContain(`class="${CLAUDE_MARKDOWN_SCOPE}"`)
   })
 })
+
+describe('prose palette on the answer the Host draws', () => {
+  it('reaches the Host renderer by its own root class, only while a plugin session is on screen', async () => {
+    const { hostProseCss, CLAUDE_SESSION_ATTRIBUTE } = await import('../src/client/markdown-theme.ts')
+    const css = hostProseCss('_markdown_1a2b3')
+    expect(css).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] ._markdown_1a2b3 strong{`)
+    expect(css).toContain(`body[${CLAUDE_SESSION_ATTRIBUTE}] ._markdown_1a2b3 :is(h1,h2,h3,h4,h5,h6){`)
+    // Nothing learned, or something that is not a class name: no rules at all.
+    expect(hostProseCss(undefined)).toBe('')
+    expect(hostProseCss('a b')).toBe('')
+    expect(hostProseCss('x}body{display:none')).toBe('')
+  })
+})
