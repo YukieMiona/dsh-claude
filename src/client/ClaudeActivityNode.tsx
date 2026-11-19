@@ -55,6 +55,12 @@ const ACTIVITY_CSS = [
   '.dsh-claude-tool-section-title{margin-bottom:4px;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;text-transform:uppercase;letter-spacing:.04em}',
   '.dsh-claude-tool-fields{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 12px;font-size:13px;line-height:20px}',
   '.dsh-claude-tool-field-key{color:var(--dsw-alias-label-tertiary)}',
+  // A question is a sentence, not a short key. In the two-column grid above it
+  // took the whole width as one unbroken line and left its answer a column of
+  // no width, which wrapped a character a line: a tall gap and no answer.
+  '.dsh-claude-tool-answers{display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:20px}',
+  '.dsh-claude-tool-answer{display:flex;flex-direction:column;gap:2px;min-width:0}',
+  '.dsh-claude-tool-answer .dsh-claude-tool-field-key{white-space:pre-wrap;overflow-wrap:anywhere}',
   '.dsh-claude-tool-field-value{min-width:0;color:var(--dsw-alias-label-primary);white-space:pre-wrap;overflow-wrap:anywhere}',
   '.dsh-claude-tool-paths{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;font:var(--dsw-font-markdown-code-block-small)}',
   '.dsh-claude-tool-path{overflow-wrap:anywhere;color:var(--dsw-alias-label-primary)}',
@@ -304,8 +310,8 @@ function ToolPresentation({ tool, t }: { tool: ClaudeTranscriptTool; t: Translat
   if (tool.toolName === 'AskUserQuestion' && tool.answers !== undefined && tool.answers.length > 0) {
     // Question text is the key as written: no underscore rewriting.
     return <Section title={t('toolAnswers')}>
-      <div className="dsh-claude-tool-fields">{tool.answers.map((pair, index) => (
-        <div key={`${index}:${pair.question}`} style={{ display: 'contents' }}>
+      <div className="dsh-claude-tool-answers">{tool.answers.map((pair, index) => (
+        <div key={`${index}:${pair.question}`} className="dsh-claude-tool-answer">
           <span className="dsh-claude-tool-field-key">{pair.question}</span>
           <span className="dsh-claude-tool-field-value">{pair.answer}</span>
         </div>
