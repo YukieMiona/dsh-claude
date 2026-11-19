@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { parseWorktreeList } from '../src/repository-status.ts'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -535,5 +536,20 @@ describe('linked checkouts', () => {
     await service.inspectLinked('/w')
     await service.inspectLinked('/w')
     expect(inspect).toHaveBeenCalledTimes(4)
+  })
+})
+
+describe('worktree list', () => {
+  it('reads every checkout and skips bare and prunable entries', () => {
+    const output = [
+      'worktree /repo/main\nHEAD aaa\nbranch refs/heads/main',
+      'worktree /repo/wt/feature\nHEAD bbb\nbranch refs/heads/feature',
+      'worktree /repo/wt/detached\nHEAD ccc\ndetached',
+      'worktree /repo/bare.git\nbare',
+      'worktree /repo/wt/gone\nHEAD ddd\nbranch refs/heads/gone\nprunable gitdir file points to non-existent location',
+      '',
+    ].join('\n\n')
+    expect(parseWorktreeList(output)).toEqual(['/repo/main', '/repo/wt/feature', '/repo/wt/detached'])
+    expect(parseWorktreeList('')).toEqual([])
   })
 })

@@ -20,6 +20,20 @@ const CACHE_TTL_MS = 5_000
 const PULL_REQUEST_TTL_FACTOR = 12
 /** How long a linked checkout whose pull request is merged is believed without asking again. */
 export const SETTLED_CHECKOUT_TTL_MS = 10 * 60_000
+const WORKTREE_LIST_TTL_MS = 30_000
+
+/** The paths out of `git worktree list --porcelain`; bare and prunable entries have no checkout to show. */
+export function parseWorktreeList(output: string): readonly string[] {
+  const paths: string[] = []
+  for (const block of output.split(/\r?\n\r?\n/u)) {
+    const lines = block.split(/\r?\n/u)
+    const path = lines.find(line => line.startsWith('worktree '))?.slice('worktree '.length).trim()
+    if (path === undefined || path.length === 0) continue
+    if (lines.some(line => line === 'bare' || line.startsWith('prunable'))) continue
+    paths.push(resolve(path))
+  }
+  return paths
+}
 const MAX_TEXT_CHARS = 1_024
 const MAX_CONFLICT_PATHS = 100
 const PULL_REQUEST_FIELDS = 'number,title,url,state,isDraft,reviewDecision,mergeStateStatus,mergedAt,statusCheckRollup,author,createdAt,baseRefName,headRefName,additions,deletions,changedFiles'
@@ -369,6 +383,7 @@ export class RepositoryStatusService {
   readonly #cache = new Map<string, { expiresAt: number; value: Promise<RepositoryStatus> }>()
   readonly #lastReady = new Map<string, RepositoryStatus>()
   readonly #settled = new Map<string, { expiresAt: number; value: RepositoryStatus }>()
+  readonly #worktrees = new Map<string, { expiresAt: number; value: Promise<readonly string[]> }>()
   #gitExecutable?: Promise<string>
   #ghExecutable?: Promise<string | undefined>
   readonly #roots = new Map<string, Promise<string | undefined>>()
@@ -465,6 +480,22 @@ export class RepositoryStatusService {
     for (const key of this.#cache.keys()) if (key.startsWith('gh:')) this.#cache.delete(key)
   }
 
+  /** Every checkout of the repository at `root`, the one at `root` included:
+   *  what `git worktree list` knows. Work a teammate agent does in a sibling
+   *  worktree never appears in this session's own tool calls, so the touched
+   *  paths cannot find it; git can. Kept briefly, since worktrees come and go. */
+  worktreesOf(root: string): Promise<readonly string[]> {
+    const known = this.#worktrees.get(root)
+    if (known !== undefined && known.expiresAt > Date.now()) return known.value
+    const value = (async () => {
+      const listed = await run(this.#runtime, await this.#git(), ['worktree', 'list', '--porcelain'], root, GIT_TIMEOUT_MS)
+      if (listed.exitCode !== 0) return []
+      return parseWorktreeList(listed.stdout)
+    })().catch((): readonly string[] => [])
+    this.#worktrees.set(root, { expiresAt: Date.now() + WORKTREE_LIST_TTL_MS, value })
+    return value
+  }
+
   /** The repository holding `directory`, or undefined outside any. A root
    *  does not move, so a settled answer is kept for the service's lifetime;
    *  a probe that could not run is not an answer and is asked again. */
@@ -487,6 +518,7 @@ export class RepositoryStatusService {
     this.#cache.clear()
     this.#lastReady.clear()
     this.#settled.clear()
+    this.#worktrees.clear()
   }
 
   #stabilize(cwd: string, next: RepositoryStatus): RepositoryStatus {

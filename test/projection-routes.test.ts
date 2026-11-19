@@ -485,9 +485,11 @@ describe('trimmed history', () => {
       task(3, 'updated', 'Other', 't2'),
       task(4, 'completed', 'done'),
       { turn: 1, step: 1, ordinal: 5, kind: 'tool-call' as const, detail: 'kept' },
+      { turn: 1, step: 1, ordinal: 6, kind: 'subagent' as const, toolName: 'Write', detail: '{"file_path":"/w/a.ts"}' },
     ])
-    expect(sent.map(item => [item.ordinal, item.title?.length ?? 0])).toEqual([[0, 401], [2, 9], [3, 5], [4, 4], [5, 0]])
-    expect(sent.filter(item => item.detail !== undefined).map(item => item.kind)).toEqual(['tool-call'])
+    expect(sent.map(item => [item.ordinal, item.title?.length ?? 0])).toEqual([[0, 401], [2, 9], [3, 5], [4, 4], [5, 0], [6, 0]])
+    // A subagent's own tool call keeps its arguments.
+    expect(sent.filter(item => item.detail !== undefined).map(item => item.kind)).toEqual(['tool-call', 'subagent'])
   })
 })
 

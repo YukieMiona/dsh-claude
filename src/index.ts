@@ -659,7 +659,13 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const cwd = cwdForClaudeSession(sessionId)
       if (cwd === undefined) return []
       const [own, ownStatus] = await Promise.all([repositoryStatus.rootOf(cwd), repositoryStatus.inspect(cwd)])
-      const roots = await touchedRepositoryRoots(touchedFilePaths(activities), own ?? cwd, directory => repositoryStatus.rootOf(directory), MAX_EXTRA_REPOSITORIES)
+      const touched = await touchedRepositoryRoots(touchedFilePaths(activities), own ?? cwd, directory => repositoryStatus.rootOf(directory), MAX_EXTRA_REPOSITORIES)
+      // The repository's other worktrees too: a teammate agent's edits are in
+      // its own process, not in this session's tool calls, and a worktree
+      // with unfinished work in it went unlisted. Only one with something
+      // pending survives the filter below, so an idle sibling adds nothing.
+      const siblings = own === undefined ? [] : (await repositoryStatus.worktreesOf(own)).filter(root => root !== own && root !== cwd)
+      const roots = [...new Set([...touched, ...siblings])].slice(0, MAX_EXTRA_REPOSITORIES)
       const probed = await Promise.all(roots.map(root => repositoryStatus.inspectLinked(root)))
       const checkouts = probed.filter(status => linkedRepositoryShown(status))
       // Pull requests the log names that no linked checkout is sitting on any
