@@ -3163,7 +3163,7 @@ describe('Claude native renderer mirroring', () => {
     await runtime.dispose()
   })
 
-  it('keeps subagent tool payloads out of the parent projection detail', async () => {
+  it('keeps a subagent call\'s input and output, bounded, so its row can name the call', async () => {
     const transport = factory()
     const owner = fakeAgent()
     const runtime = supervisor(transport.create)
@@ -3175,7 +3175,7 @@ describe('Claude native renderer mirroring', () => {
       parent_tool_use_id: 'parent-call',
       message: {
         role: 'assistant',
-        content: [{ type: 'tool_use', id: 'nested-1', name: 'Read', input: { path: '/a'.repeat(500) } }],
+        content: [{ type: 'tool_use', id: 'nested-1', name: 'Bash', input: { command: 'echo '.repeat(500), description: 'Run the parser tests' } }],
       },
     } as SDKMessage)
     query.push({
@@ -3191,10 +3191,12 @@ describe('Claude native renderer mirroring', () => {
     const nested = (await projection(runtime)).activities.filter(activity => activity.parentToolUseId === 'parent-call')
     expect(nested).toHaveLength(2)
     expect(nested.map(activity => activity.kind)).toEqual(['subagent', 'subagent'])
-    expect(nested[0]).toMatchObject({ toolUseId: 'nested-1', toolName: 'Read', phase: 'started' })
+    expect(nested[0]).toMatchObject({ toolUseId: 'nested-1', toolName: 'Bash', phase: 'started' })
     expect(nested[1]).toMatchObject({ toolUseId: 'nested-1', phase: 'completed' })
-    expect(nested[0]!.detail).toBeUndefined()
-    expect(nested[1]!.detail).toBeUndefined()
+    // The long command gives way; the description the row is titled with survives.
+    expect(nested[0]!.detail!.length).toBeLessThanOrEqual(512)
+    expect(JSON.parse(nested[0]!.detail!)).toMatchObject({ description: 'Run the parser tests' })
+    expect(nested[1]!.detail!.length).toBeLessThanOrEqual(512)
     await runtime.dispose()
   })
 })

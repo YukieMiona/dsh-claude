@@ -106,8 +106,8 @@ export function wireActivities(activities: Activities): Activities {
   const out: Activities[number][] = []
   activities.forEach((activity, index) => {
     // Task lifecycle records only: a tool call a subagent made keeps its
-    // arguments, which are what its row shows when opened.
-    if (activity.kind !== 'subagent' || activity.toolName !== undefined) {
+    // arguments and its result keeps its output, which are what its row shows.
+    if (activity.kind !== 'subagent' || activity.toolName !== undefined || activity.parentToolUseId !== undefined) {
       out.push(activity)
       return
     }

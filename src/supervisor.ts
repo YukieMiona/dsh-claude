@@ -475,8 +475,9 @@ const TASK_ACTIVITY_DETAIL_CHARS = 2_000
  *  two thirds of a long session's history. */
 export function slimTaskActivity(activity: ClaudeActivityInput): ClaudeActivityInput {
   // A tool call a subagent made keeps its arguments: the paths in them are how
-  // the checkouts a session wrote to are found.
-  if (activity.kind !== 'subagent' || activity.toolName !== undefined) return activity
+  // the checkouts a session wrote to are found. Its result (no tool name, but
+  // still under a parent call) keeps its bounded output for the same row.
+  if (activity.kind !== 'subagent' || activity.toolName !== undefined || activity.parentToolUseId !== undefined) return activity
   const cap = (value: unknown): unknown => typeof value === 'string' && value.length > TASK_ACTIVITY_LABEL_CHARS
     ? `${value.slice(0, TASK_ACTIVITY_LABEL_CHARS)}…`
     : value
@@ -2036,7 +2037,9 @@ export class ClaudeSupervisor {
           toolName: message.toolName,
           title: message.toolName,
           summary: message.parentToolUseId === undefined ? rootCallSummary(message.toolName, message.input) : `Subagent called ${message.toolName}`,
-          detail: message.parentToolUseId === undefined ? message.input : undefined,
+          // A subagent's calls keep their input too: the teammate panel titles
+          // each row from it. normalizeActivity caps nested detail small.
+          detail: message.input,
         })
         // The lead's own list, or the task board every member shares.
         if (message.toolName === 'TodoWrite' && message.parentToolUseId === undefined) {
@@ -2062,7 +2065,7 @@ export class ClaudeSupervisor {
           toolUseId: message.toolUseId,
           ...(message.parentToolUseId === undefined ? {} : { parentToolUseId: message.parentToolUseId }),
           title: message.isError ? 'Tool failed' : 'Tool completed',
-          detail: message.parentToolUseId === undefined ? message.output : undefined,
+          detail: message.output,
           isError: message.isError,
         })
         return
