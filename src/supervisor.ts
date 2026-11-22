@@ -295,6 +295,11 @@ interface ActiveTurn {
    *  The transcript has no other clock: activities carry no timestamps. */
   startedAt: number
   firstOutputAt: number | undefined
+  /** First output of the provider request now streaming, and the output time
+   *  and tokens of the requests that have finished (see ClaudeUsage.decodeMs). */
+  requestOutputAt: number | undefined
+  decodeMs: number
+  decodeTokens: number
   aborted: boolean
   deniedToolUseIds: Set<string>
   /** Root tool calls still waiting for their result, by toolUseId, with the
@@ -491,6 +496,11 @@ export function slimTaskActivity(activity: ClaudeActivityInput): ClaudeActivityI
     ...(keepDetail ? { detail } : {}),
   }
 }
+
+/** What DSH shows as the prompt of a turn Claude Code started by itself. The
+ *  CLI does not pass on the text that started it, so this says where it came
+ *  from and nothing more. */
+const FOREIGN_TURN_LABEL = 'Claude Code started this turn itself, most often to answer a message from another Claude session.'
 
 const BACKGROUND_TASK_REPORT_PROMPT = [
   '[Automatic note from the DSH host, not a message from the user.]',
@@ -858,7 +868,7 @@ export class ClaudeSupervisor {
         delete loop.wakeup
         this.#armLoopFallback(entry.sessionId, undefined)
       }
-    } else if (loop !== undefined) {
+    } else if (loop !== undefined && message.source === 'schedule_wakeup') {
       const crons = [...loop.crons.entries()]
       if (crons.length === 1) {
         onlyCronPrompt = crons[0]![1].prompt
@@ -877,7 +887,7 @@ export class ClaudeSupervisor {
       clearTimeout(entry.idleTimer)
       entry.idleTimer = undefined
     }
-    const label = scheduledTurnLabel(wakeup, onlyCronPrompt)
+    const label = message.source === 'foreign' ? FOREIGN_TURN_LABEL : scheduledTurnLabel(wakeup, onlyCronPrompt)
     const followupId = randomUUID()
     let settle: (attached: boolean) => void = () => undefined
     const attached = new Promise<boolean>(resolve => { settle = resolve })
@@ -1264,6 +1274,9 @@ export class ClaudeSupervisor {
       requestUsage: undefined,
       startedAt: Date.now(),
       firstOutputAt: undefined,
+      requestOutputAt: undefined,
+      decodeMs: 0,
+      decodeTokens: 0,
       aborted: false,
       deniedToolUseIds: new Set(),
       openCalls: new Map(),
@@ -1705,6 +1718,11 @@ export class ClaudeSupervisor {
       promptSuggestions: true,
       permissionMode,
       allowDangerouslySkipPermissions: true,
+      // The name other Claude sessions address this one by (ListAgents,
+      // SendMessage). Without it the CLI makes one up from the folder name,
+      // which nobody outside could connect to a DSH session; the DSH session
+      // id is the name the owner already has.
+      extraArgs: { name: entry.sessionId },
       canUseTool,
       hooks: {
         ...createAutoModeEscalation(),
@@ -1866,6 +1884,21 @@ export class ClaudeSupervisor {
       await this.#adoptScheduledTurn(entry, message)
       return
     }
+    if (message.kind === 'command-started') {
+      if (entry.active !== undefined) {
+        entry.active.sawActivity = true
+        return
+      }
+      // With no DSH turn open and no prompt of ours outstanding, the CLI began
+      // a turn nobody here asked for: on this CLI, a message from another
+      // Claude session to this idle one. Its output used to be dropped as
+      // turn-less, so the owner never saw the message was answered. Draw it
+      // in like a scheduled turn. Anything ambiguous keeps the old behaviour.
+      if (entry.adoption !== undefined || entry.orphanScheduledTurn === true || entry.sentPrompts.size > 0) return
+      entry.scheduledTurnsOpen += 1
+      await this.#adoptScheduledTurn(entry, { kind: 'scheduled-turn', commandUuid: message.commandUuid, source: 'foreign' })
+      return
+    }
 
     const active = entry.active
     if (active === undefined) {
@@ -1886,6 +1919,15 @@ export class ClaudeSupervisor {
       }
       if (message.sessionId !== entry.claudeSessionId) {
         throw new ClaudeProtocolError(`Claude Code result session ${message.sessionId} does not match ${entry.claudeSessionId}`)
+      }
+      // The CLI does not pass on a cross-session message's text, so the
+      // transcript at least says this answer went to another session.
+      if (message.origin === 'peer') {
+        await this.#appendSafely(active, {
+          kind: 'status',
+          phase: 'completed',
+          title: 'Answered a message from another Claude session',
+        })
       }
       const sentEarlier = message.userMessageUuid !== undefined && entry.sentPrompts.delete(message.userMessageUuid)
       // The CLI folds a prompt that arrives mid-turn into the running turn and
@@ -2081,6 +2123,24 @@ export class ClaudeSupervisor {
           isError: message.phase === 'failed',
         })
         return
+      case 'request-timing': {
+        // A subagent's requests run while the main conversation waits on it;
+        // counting them would double the clock against the main thread's tokens.
+        if (message.parentToolUseId !== undefined) return
+        if (message.phase === 'start') {
+          active.requestOutputAt = undefined
+        } else if (message.phase === 'token') {
+          active.requestOutputAt ??= Date.now()
+        } else {
+          const outputTokens = message.outputTokens ?? 0
+          if (active.requestOutputAt !== undefined && outputTokens > 0) {
+            active.decodeMs += Math.max(0, Date.now() - active.requestOutputAt)
+            active.decodeTokens += outputTokens
+          }
+          active.requestOutputAt = undefined
+        }
+        return
+      }
       case 'request-usage': {
         // A subagent call bills against its own context, so it never stands in
         // for the main conversation's size.
@@ -2163,6 +2223,7 @@ export class ClaudeSupervisor {
       ...usage,
       durationMs: Math.max(0, now - active.startedAt),
       ...(active.firstOutputAt === undefined ? {} : { ttftMs: Math.max(0, active.firstOutputAt - active.startedAt) }),
+      ...(active.decodeMs > 0 && active.decodeTokens > 0 ? { decodeMs: active.decodeMs, decodeTokens: active.decodeTokens } : {}),
     }
   }
 

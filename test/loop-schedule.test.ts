@@ -205,10 +205,11 @@ describe('loop schedule helpers', () => {
     expect(schedule.crons.size).toBe(0)
   })
 
-  it('normalizes a scheduler-fired turn start and leaves other lifecycle frames as telemetry', () => {
+  it('normalizes a scheduler-fired turn start apart from any other start', () => {
     expect(normalizeSdkMessage(wakeupStarted(42))).toEqual([{ kind: 'scheduled-turn', commandUuid: 'cli-command-1', source: 'loop_wakeup', scheduledFor: 42 }])
+    // Which one this is (a sent prompt, or a turn the CLI began) is the supervisor's call.
     expect(normalizeSdkMessage({ type: 'command_lifecycle', command_uuid: 'u', state: 'started' } as unknown as SDKMessage))
-      .toEqual([{ kind: 'progress', subtype: 'command_lifecycle' }])
+      .toEqual([{ kind: 'command-started', commandUuid: 'u' }])
   })
 })
 
@@ -233,6 +234,44 @@ describe('Claude Code /loop under the supervisor', () => {
 
     expect(events).toContainEqual({ type: 'complete', text: 'CI is green.' })
     expect(query.sentText).toEqual(['/loop check CI'])
+    await h.supervisor.dispose()
+  })
+
+  it('draws a turn the CLI starts for another session into DSH, under the DSH session name', async () => {
+    const h = harness()
+    const first = await h.supervisor.runTurn({ agent: h.agent, prompt: 'hello', model: 'default' })
+    const query = h.queries[0]!
+    // Other Claude sessions find this one under the DSH session id.
+    expect(query.options.extraArgs).toEqual({ name: 'loop-session' })
+    query.push(init())
+    query.push(result('hi', { user_message_uuid: query.sent[0]?.uuid }))
+    await drain(first)
+
+    // Idle. Another session's message makes the CLI start a turn by itself.
+    query.push({ type: 'command_lifecycle', command_uuid: 'peer-1', state: 'started', session_id: 'claude-1' } as unknown as SDKMessage)
+    await vi.waitFor(() => { expect(h.followups).toHaveLength(1) })
+    expect(h.followups[0]!.text).toMatch(/another Claude session/u)
+
+    const stream = await h.answer(h.followups[0]!)
+    query.push(init())
+    query.push(assistant('received'))
+    query.push(result('received', { origin: { kind: 'peer', from: 'uds:/tmp/cc-socks/1.sock' } }))
+    const events = await drain(stream)
+    expect(events).toContainEqual({ type: 'complete', text: 'received' })
+    // Nothing was sent for it: the CLI was already running that turn.
+    expect(query.sentText).toEqual(['hello'])
+    await h.supervisor.dispose()
+  })
+
+  it('leaves the start of its own prompt alone', async () => {
+    const h = harness()
+    const stream = await h.supervisor.runTurn({ agent: h.agent, prompt: 'hello', model: 'default' })
+    const query = h.queries[0]!
+    query.push(init())
+    query.push({ type: 'command_lifecycle', command_uuid: query.sent[0]?.uuid, state: 'started', session_id: 'claude-1' } as unknown as SDKMessage)
+    query.push(result('hi', { user_message_uuid: query.sent[0]?.uuid }))
+    await drain(stream)
+    expect(h.followups).toHaveLength(0)
     await h.supervisor.dispose()
   })
 

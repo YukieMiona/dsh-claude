@@ -83,6 +83,16 @@ export type NormalizedSdkMessage =
     usage: ClaudeUsage
     parentToolUseId?: string
   }
+  | {
+    /** One provider request's output clock, read off the partial stream:
+     *  `start` at message_start, `token` at each content block's start (the
+     *  first one is the first output, thinking included even when its text is
+     *  not shown), `end` at message_delta with that request's output tokens. */
+    kind: 'request-timing'
+    phase: 'start' | 'token' | 'end'
+    outputTokens?: number
+    parentToolUseId?: string
+  }
   | { kind: 'status'; title: string; summary?: string; detail?: unknown }
   | { kind: 'warning'; title: string; summary?: string; detail?: unknown }
   | {
@@ -98,11 +108,20 @@ export type NormalizedSdkMessage =
      *  user message uuid, so this frame is the only way to tell it apart. */
     kind: 'scheduled-turn'
     commandUuid: string
-    source: 'loop_wakeup' | 'schedule_wakeup'
+    /** `foreign`: a turn the CLI started for a reason its start frame does not
+     *  name, such as a message from another Claude session (see command-started). */
+    source: 'loop_wakeup' | 'schedule_wakeup' | 'foreign'
     scheduledFor?: number
   }
+  | {
+    /** Any other command the CLI began running: a prompt this package sent,
+     *  or a turn the CLI started itself (a cross-session message, a reaction
+     *  to a task). Only the supervisor can tell which, by whether it sent one. */
+    kind: 'command-started'
+    commandUuid: string
+  }
   | { kind: 'permission-denied'; toolUseId: string; toolName: string; summary: string }
-  | { kind: 'result'; success: boolean; text?: string; errors?: readonly string[]; failureDetail?: string; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; answeredPromptUuids?: readonly string[]; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
+  | { kind: 'result'; origin?: string; success: boolean; text?: string; errors?: readonly string[]; failureDetail?: string; usage: ClaudeUsage; sessionId: string; userMessageUuid?: string; answeredPromptUuids?: readonly string[]; queuedTurnCount?: number; terminalReason?: string; permissionDenials?: readonly { toolName: string; toolUseId: string }[] }
   | { kind: 'protocol-error'; title: string; detail: unknown }
   /** Claude Code's guess at the user's next prompt; arrives after `result`. */
   | { kind: 'prompt-suggestion'; text: string }
@@ -466,6 +485,9 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
         return text === undefined ? [] : [{ kind: 'thinking', text, phase: 'updated', ...(parentToolUseId === undefined ? {} : { parentToolUseId }) }]
       }
     }
+    const scope = parentToolUseId === undefined ? {} : { parentToolUseId }
+    if (event?.type === 'message_start') return [{ kind: 'request-timing', phase: 'start', ...scope }]
+    if (event?.type === 'content_block_start') return [{ kind: 'request-timing', phase: 'token', ...scope }]
     if (event?.type === 'message_delta') {
       // The one place a single request's own usage survives. The assistant
       // message the CLI also emits for the same request carries zeros -- it is
@@ -473,7 +495,13 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       // turn's SUM over every request, which is not a size the Host can divide
       // by a context window. This frame is that request's prompt exactly.
       const usage = usageOf(record(event.usage))
-      return hasUsageCounts(usage) ? [{ kind: 'request-usage', usage, ...(parentToolUseId === undefined ? {} : { parentToolUseId }) }] : []
+      const timing: NormalizedSdkMessage = {
+        kind: 'request-timing',
+        phase: 'end',
+        ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+        ...scope,
+      }
+      return hasUsageCounts(usage) ? [{ kind: 'request-usage', usage, ...scope }, timing] : [timing]
     }
     return []
   }
@@ -506,6 +534,9 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
     // means at least one more turn follows without further input, so this result
     // is not the end of the turn.
     const queuedTurnCount = finiteNumber(value.queued_turn_count)
+    // Who asked for this turn when no prompt did: `peer` is a message from
+    // another Claude session (CLI 2.1.327, seen live 2026-11-22).
+    const origin = string(record(value.origin)?.kind)
     const permissionDenials = Array.isArray(value.permission_denials)
       ? value.permission_denials
           .map(item => record(item))
@@ -531,6 +562,7 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       ...(userMessageUuid === undefined ? {} : { userMessageUuid }),
       ...(answeredPromptUuids === undefined || answeredPromptUuids.length === 0 ? {} : { answeredPromptUuids }),
       ...(queuedTurnCount === undefined ? {} : { queuedTurnCount }),
+      ...(origin === undefined ? {} : { origin }),
     }]
   }
   if (value.type === 'prompt_suggestion') {
@@ -578,6 +610,7 @@ export function normalizeSdkMessage(message: SDKMessage): NormalizedSdkMessage[]
       const scheduledFor = finiteNumber(value.scheduled_for)
       return [{ kind: 'scheduled-turn', commandUuid, source, ...(scheduledFor === undefined ? {} : { scheduledFor }) }]
     }
+    if (value.state === 'started' && commandUuid !== undefined) return [{ kind: 'command-started', commandUuid }]
     if (commandUuid !== undefined && ['completed', 'cancelled', 'discarded', 'refused'].includes(String(value.state))) {
       return [{ kind: 'command-ended', commandUuid }]
     }

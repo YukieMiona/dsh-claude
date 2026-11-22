@@ -760,6 +760,58 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it("times the main conversation's own output, leaving out tool runs and subagents", async () => {
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      const transport = factory()
+      const owner = fakeAgent()
+      const runtime = supervisor(transport.create)
+      const output = await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
+      const query = transport.queries[0]!
+      // Read the turn while it runs: the supervisor waits on its reader.
+      const events = collect(output)
+      const stream = (event: Record<string, unknown>, parent: string | null = null) => query.push({
+        type: 'stream_event', parent_tool_use_id: parent, event,
+      } as unknown as SDKMessage)
+      // The supervisor reads the stream on its own schedule: let it catch up
+      // before the clock moves, or every frame is read at the same instant.
+      const tick = async (ms: number) => {
+        for (let i = 0; i < 20; i += 1) await new Promise(resolve => setImmediate(resolve))
+        now += ms
+      }
+      query.push(init())
+      // Request 1: 400 ms before its first block, then 2 s of output, 100 tokens.
+      stream({ type: 'message_start', message: {} })
+      await tick(400)
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } })
+      await tick(2_000)
+      stream({ type: 'message_delta', usage: { output_tokens: 100 } })
+      // A tool runs for a minute, and a subagent streams meanwhile: neither counts.
+      await tick(60_000)
+      stream({ type: 'message_start', message: {} }, 'task-1')
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 'task-1')
+      await tick(5_000)
+      stream({ type: 'message_delta', usage: { output_tokens: 900 } }, 'task-1')
+      // Request 2: 2 s of output, 100 tokens.
+      stream({ type: 'message_start', message: {} })
+      stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
+      await tick(2_000)
+      stream({ type: 'message_delta', usage: { output_tokens: 100 } })
+      await tick(0)
+      query.push(result('hello'))
+      await events
+      const snapshot = await projection(runtime)
+      const recorded = snapshot.activities.filter(activity => activity.kind === 'usage')
+      expect(recorded).toContainEqual(expect.objectContaining({
+        usage: expect.objectContaining({ decodeMs: 4_000, decodeTokens: 200 }),
+      }))
+      await runtime.dispose()
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   it('falls back to the turn total when no call reported its own usage', async () => {
     const transport = factory()
     const owner = fakeAgent()

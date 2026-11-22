@@ -482,6 +482,15 @@ export function cacheHitRate(usage: ClaudeUsage): number | undefined {
   return total === 0 ? undefined : read / total
 }
 
+/** Output tokens per second over the time the model spent producing them,
+ *  shaped like the Host's own figure; undefined when the turn measured none. */
+export function outputSpeed(usage: ClaudeUsage): string | undefined {
+  const { decodeMs, decodeTokens } = usage
+  if (decodeMs === undefined || decodeTokens === undefined || decodeMs <= 0 || decodeTokens <= 0) return undefined
+  const perSecond = decodeTokens / (decodeMs / 1_000)
+  return perSecond >= 100 ? String(Math.round(perSecond)) : perSecond.toFixed(1)
+}
+
 /** The turn's accounting, in the order a reader wants it: size, then cost of
  *  assembling it, then how long it took, then money. */
 export function turnUsageParts(usage: ClaudeUsage, t: Translate): readonly string[] {
@@ -495,6 +504,8 @@ export function turnUsageParts(usage: ClaudeUsage, t: Translate): readonly strin
   if (cached !== undefined) parts.push(t('turnUsageCache', { percent: (cached * 100).toFixed(1) }))
   if (usage.durationMs !== undefined) parts.push(formatTurnDuration(usage.durationMs))
   if (usage.ttftMs !== undefined) parts.push(t('turnUsageTtft', { duration: formatTurnDuration(usage.ttftMs) }))
+  const speed = outputSpeed(usage)
+  if (speed !== undefined) parts.push(t('turnUsageSpeed', { speed }))
   if (usage.cumulativeCostUsd !== undefined) parts.push(t('turnUsageCost', { cost: usage.cumulativeCostUsd.toFixed(2) }))
   return parts
 }

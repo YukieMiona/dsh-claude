@@ -29,6 +29,22 @@ describe('Claude SDK message normalization', () => {
       .toEqual([{ kind: 'command-ended', commandUuid: 'prompt-1' }])
     expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'prompt-1', state: 'queued' })))
       .toEqual([{ kind: 'progress', subtype: 'command_lifecycle' }])
+    // A start with no wakeup source: a sent prompt, or a turn the CLI began itself.
+    expect(normalizeSdkMessage(sdk({ type: 'command_lifecycle', command_uuid: 'prompt-1', state: 'started' })))
+      .toEqual([{ kind: 'command-started', commandUuid: 'prompt-1' }])
+  })
+
+  it('reads who asked for a turn no prompt asked for', () => {
+    const [normalized] = normalizeSdkMessage(sdk({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      session_id: 'session-1',
+      result: 'received',
+      usage: { input_tokens: 1, output_tokens: 1 },
+      origin: { kind: 'peer', from: 'uds:/tmp/cc-socks/1.sock' },
+    }))
+    expect(normalized).toMatchObject({ kind: 'result', success: true, origin: 'peer' })
   })
 
   it('normalizes partial visible text', () => {
@@ -130,7 +146,21 @@ describe('Claude SDK message normalization', () => {
     }))).toEqual([{
       kind: 'request-usage',
       usage: { inputTokens: 5, outputTokens: 40, cacheReadTokens: 180_000, cacheCreationTokens: 1_200 },
-    }])
+    }, { kind: 'request-timing', phase: 'end', outputTokens: 40 }])
+  })
+
+  it("marks a request's start and each content block's start for its output clock", () => {
+    expect(normalizeSdkMessage(sdk({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: { type: 'message_start', message: { usage: { input_tokens: 5 } } },
+    }))).toEqual([{ kind: 'request-timing', phase: 'start' }])
+    // Thinking whose text is not shown still starts a block: its time counts.
+    expect(normalizeSdkMessage(sdk({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+    }))).toEqual([{ kind: 'request-timing', phase: 'token' }])
   })
 
   it('tags a subagent message_delta and ignores one without usage', () => {
@@ -138,11 +168,14 @@ describe('Claude SDK message normalization', () => {
       type: 'stream_event',
       parent_tool_use_id: 'task-1',
       event: { type: 'message_delta', usage: { input_tokens: 3, output_tokens: 1 } },
-    }))).toEqual([{ kind: 'request-usage', usage: { inputTokens: 3, outputTokens: 1 }, parentToolUseId: 'task-1' }])
+    }))).toEqual([
+      { kind: 'request-usage', usage: { inputTokens: 3, outputTokens: 1 }, parentToolUseId: 'task-1' },
+      { kind: 'request-timing', phase: 'end', outputTokens: 1, parentToolUseId: 'task-1' },
+    ])
     expect(normalizeSdkMessage(sdk({
       type: 'stream_event',
       event: { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
-    }))).toEqual([])
+    }))).toEqual([{ kind: 'request-timing', phase: 'end' }])
   })
 
   it('reports no prompt sample when an assistant message carries no usage', () => {

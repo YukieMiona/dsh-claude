@@ -43,6 +43,13 @@ describe('turnUsageParts', () => {
     expect(turnUsageParts(USAGE, t)).toEqual(['80.5K tok', 'Cache hit 98.0%', '2m 08s', 'TTFT 1.2s', '$5.94 total'])
   })
 
+  it('adds the output speed the turn measured, in the Host\'s own shape', () => {
+    expect(turnUsageParts({ outputTokens: 902, decodeMs: 20_000, decodeTokens: 902 }, t)).toEqual(['902 tok', '45.1 tok/s'])
+    expect(turnUsageParts({ decodeMs: 1_000, decodeTokens: 250 }, t)).toEqual(['250 tok/s'])
+    // Nothing measured, or a clock of zero, shows no speed rather than infinity.
+    expect(turnUsageParts({ outputTokens: 5, decodeMs: 0, decodeTokens: 5 }, t)).toEqual(['5 tok'])
+  })
+
   it('leaves out what the turn never reported', () => {
     expect(turnUsageParts({ outputTokens: 12 }, t)).toEqual(['12 tok'])
   })
