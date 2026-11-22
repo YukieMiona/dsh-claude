@@ -70,6 +70,13 @@ interface ClaudeUsage {
   durationMs?: number;
   /** Wall time to the first visible token of the turn. */
   ttftMs?: number;
+  /** Time the main conversation's requests spent producing output, from each
+   *  request's first content block to its closing usage frame, summed over
+   *  the turn; and the output tokens of those same requests. Tool runs and
+   *  waits between requests are outside it, so tokens / time is the model's
+   *  own output speed. */
+  decodeMs?: number;
+  decodeTokens?: number;
 }
 interface ClaudeSessionBoundEvent {
   claudeSessionId: string;

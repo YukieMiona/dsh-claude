@@ -479,6 +479,7 @@ declare const en: {
   readonly turnUsageTokens: "{count} tok";
   readonly turnUsageCache: "Cache hit {percent}%";
   readonly turnUsageTtft: "TTFT {duration}";
+  readonly turnUsageSpeed: "{speed} tok/s";
   readonly turnUsageCost: "${cost} total";
   readonly toolBackground: "Move to background";
   readonly toolBackgrounding: "Moving…";
