@@ -327,6 +327,26 @@ describe('Claude sidecar conversation projection', () => {
     ])
   })
 
+  it("keeps a background Agent's calls on its card after the lead writes prose", () => {
+    // Seen live in a Nami turn: the Agent returned at once, the lead wrote a
+    // line, and the subagent's 59 later calls were dropped from the card.
+    const items = transcriptItemsForStep([
+      { turn: 2, step: 1, ordinal: 0, kind: 'tool-call', phase: 'started', toolUseId: 'agent-1', toolName: 'Agent', detail: JSON.stringify({ description: 'Run the bench', run_in_background: true }) },
+      { turn: 2, step: 1, ordinal: 1, kind: 'tool-result', phase: 'completed', toolUseId: 'agent-1', detail: 'Async agent launched' },
+      { turn: 2, step: 1, ordinal: 2, kind: 'text', text: 'The agent is running; meanwhile I read the log.' },
+      { turn: 2, step: 1, ordinal: 3, kind: 'tool-call', phase: 'started', toolUseId: 'read-1', toolName: 'Read', detail: JSON.stringify({ file_path: 'a.log' }) },
+      { turn: 2, step: 1, ordinal: 4, kind: 'subagent', phase: 'started', parentToolUseId: 'agent-1', toolUseId: 'sub-bash-1', toolName: 'Bash', detail: JSON.stringify({ command: 'bench.sh' }) },
+      { turn: 2, step: 1, ordinal: 5, kind: 'subagent', phase: 'completed', parentToolUseId: 'agent-1', toolUseId: 'sub-bash-1', detail: '10 cases passed' },
+      { turn: 2, step: 1, ordinal: 6, kind: 'text', text: 'Waiting on it.' },
+      { turn: 2, step: 1, ordinal: 7, kind: 'subagent', phase: 'started', parentToolUseId: 'agent-1', toolUseId: 'sub-bash-2', toolName: 'Bash', detail: JSON.stringify({ command: 'bench.sh --only tools_' }) },
+    ], 2, 1)
+    const agentCard = items.flatMap(item => item.kind === 'tools' ? item.tools : []).find(tool => tool.toolUseId === 'agent-1')
+    expect(agentCard?.subcalls.map(call => call.toolUseId)).toEqual(['sub-bash-1', 'sub-bash-2'])
+    expect(agentCard?.subcalls[0]).toMatchObject({ phase: 'completed' })
+    // The read the lead ran meanwhile stays a card of its own.
+    expect(items.flatMap(item => item.kind === 'tools' ? item.tools : []).map(tool => tool.toolUseId)).toEqual(['agent-1', 'read-1'])
+  })
+
   it('derives readable descriptions and successful edit diffs for one tool group', () => {
     const activities: ClaudeActivityEvent[] = [
       {

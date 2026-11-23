@@ -563,9 +563,15 @@ export function transcriptItemsForStep(
   let group: {
     ordinal: number
     tools: ClaudeTranscriptTool[]
-    byId: Map<string, number>
     trailingActivities: ClaudeActivityEvent[]
   } | undefined
+  /** Every tool card of the step by its call id, in whichever group it was
+   *  drawn. A background Agent's subagent keeps working after the lead has
+   *  written prose (which closes the Agent's group), so its calls, and any
+   *  late result, must still reach the card they belong to. The group's tool
+   *  list is the very array the transcript item holds, so updating it here
+   *  updates the drawn card. */
+  const homes = new Map<string, { tools: ClaudeTranscriptTool[]; index: number }>()
   /** Emit an activity's folded row where it first appears; later pings that
    *  fold onto the same row update it in place rather than stacking up. */
   const emitRow = (activity: ClaudeActivityEvent): void => {
@@ -610,8 +616,8 @@ export function transcriptItemsForStep(
       continue
     }
     if (activity.kind === 'tool-call' && activity.toolUseId !== undefined && activity.toolName !== undefined) {
-      group ??= { ordinal: activity.ordinal, tools: [], byId: new Map(), trailingActivities: [] }
-      group.byId.set(activity.toolUseId, group.tools.length)
+      group ??= { ordinal: activity.ordinal, tools: [], trailingActivities: [] }
+      homes.set(activity.toolUseId, { tools: group.tools, index: group.tools.length })
       const input = inputRecord(activity.detail)
       const recorded = activity.toolName === ASK_USER_QUESTION ? answered.get(activity.toolUseId) : undefined
       group.tools.push({
@@ -627,16 +633,17 @@ export function transcriptItemsForStep(
       })
       continue
     }
-    if ((activity.kind === 'tool-result' || activity.kind === 'permission') && activity.toolUseId !== undefined && group !== undefined) {
-      const index = group.byId.get(activity.toolUseId)
-      const previous = index === undefined ? undefined : group.tools[index]
-      if (index !== undefined && previous !== undefined) {
+    if ((activity.kind === 'tool-result' || activity.kind === 'permission') && activity.toolUseId !== undefined && homes.has(activity.toolUseId)) {
+      const home = homes.get(activity.toolUseId)!
+      const index = home.index
+      const previous = home.tools[index]
+      if (previous !== undefined) {
         const failed = activity.isError === true || activity.phase === 'failed' || activity.kind === 'permission'
         const diffs = failed ? undefined : editDiffs(previous.toolName, inputRecord(previous.input))
         const additions = diffs?.reduce((total, diff) => total + lineCount(diff.newText), 0)
         const deletions = diffs?.reduce((total, diff) => total + (diff.oldText === null ? 0 : lineCount(diff.oldText)), 0)
         const answers = activity.kind === 'permission' ? undefined : cardAnswers(previous, activity.detail, failed)
-        group.tools[index] = {
+        home.tools[index] = {
           ...previous,
           description: toolDescription(previous.toolName, inputRecord(previous.input), failed, answers),
           ...(answers === undefined ? {} : { answers }),
@@ -649,16 +656,17 @@ export function transcriptItemsForStep(
       }
       continue
     }
-    if (activity.kind === 'subagent' && activity.parentToolUseId !== undefined && group !== undefined) {
-      const index = group.byId.get(activity.parentToolUseId)
-      const previous = index === undefined ? undefined : group.tools[index]
+    if (activity.kind === 'subagent' && activity.parentToolUseId !== undefined && homes.has(activity.parentToolUseId)) {
+      const home = homes.get(activity.parentToolUseId)!
+      const index = home.index
+      const previous = home.tools[index]
       const nested = subcallOf(activity)
-      if (index !== undefined && previous !== undefined && nested !== undefined) {
+      if (previous !== undefined && nested !== undefined) {
         const nestedIndex = previous.subcalls.findIndex(item => item.toolUseId === nested.toolUseId)
         const subcalls = nestedIndex === -1
           ? [...previous.subcalls, nested]
           : previous.subcalls.map((item, position) => position === nestedIndex ? { ...item, ...nested } : item)
-        group.tools[index] = { ...previous, subcalls }
+        home.tools[index] = { ...previous, subcalls }
       }
       continue
     }
