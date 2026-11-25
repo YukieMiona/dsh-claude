@@ -104,3 +104,26 @@ describe('trustedRequest with a connection service', () => {
     expect(trustedRequest(req, service(403))).toBe(false)
   })
 })
+
+describe('trustedRequest with a Host 0.2.3+ connection service (admit)', () => {
+  const remote = () => request('203.0.113.7', { host: 'dsh.example.com', origin: 'https://dsh.example.com' })
+
+  it('accepts a request admit() returns a Peer for', () => {
+    const admit = vi.fn((_req: IncomingMessage) => ({ peer: {} }))
+    const req = remote()
+    expect(trustedRequest(req, { connection: { admit } })).toBe(true)
+    expect(admit).toHaveBeenCalledWith(req)
+  })
+
+  it('rejects a non-loopback request admit() rejects', () => {
+    const admit = vi.fn(() => ({ rejection: 403 }))
+    expect(trustedRequest(remote(), { connection: { admit } })).toBe(false)
+  })
+
+  it('prefers admit() over requestRejection() when a Host offers both', () => {
+    const admit = vi.fn(() => ({ rejection: 401 }))
+    const requestRejection = vi.fn(() => undefined)
+    expect(trustedRequest(remote(), { connection: { admit, requestRejection } })).toBe(false)
+    expect(requestRejection).not.toHaveBeenCalled()
+  })
+})
