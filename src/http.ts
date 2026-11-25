@@ -33,12 +33,6 @@ export function trustedRequest(req: IncomingMessage, ctx?: any): boolean {
   return connectionAdmits(req, ctx) || loopbackSameOrigin(req)
 }
 
-/** The Host's connection service, when this composition has one.
- *
- *  Looked up with `ctx.get`, never as `ctx.connection`: the plugin does not
- *  declare `connection` in its `inject` (older Hosts have no such service),
- *  and cordis throws on property access to an undeclared service. Reading the
- *  property first made this path fail silently on every request. */
 /** Host 0.2.3+ admits a request with `admit(req)`, which returns `{ peer }` or
  *  `{ rejection }`; Hosts up to 0.2.2 offered `requestRejection(req)`, which
  *  returns `undefined` for an admitted request. Either one is accepted. */
@@ -47,6 +41,12 @@ interface ConnectionFence {
   requestRejection?(req: IncomingMessage): unknown
 }
 
+/** The Host's connection service, when this composition has one.
+ *
+ *  Looked up with `ctx.get`, never as `ctx.connection`: the plugin does not
+ *  declare `connection` in its `inject` (older Hosts have no such service),
+ *  and cordis throws on property access to an undeclared service. Reading the
+ *  property first made this path fail silently on every request. */
 function connectionService(ctx: any): ConnectionFence | undefined {
   for (const read of [() => ctx?.get?.('connection'), () => ctx?.connection]) {
     try {
