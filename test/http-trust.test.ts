@@ -104,3 +104,78 @@ describe('trustedRequest with a connection service', () => {
     expect(trustedRequest(req, service(403))).toBe(false)
   })
 })
+
+describe('trustedRequest with a Host 0.2.3+ connection service (admit)', () => {
+  const remote = () => request('203.0.113.7', { host: 'dsh.example.com', origin: 'https://dsh.example.com' })
+
+  it('accepts a request admit() returns a Peer for', () => {
+    const admit = vi.fn((_req: IncomingMessage) => ({ peer: {} }))
+    const req = remote()
+    expect(trustedRequest(req, { connection: { admit } })).toBe(true)
+    expect(admit).toHaveBeenCalledWith(req)
+  })
+
+  it('rejects a non-loopback request admit() rejects', () => {
+    const admit = vi.fn(() => ({ rejection: 403 }))
+    expect(trustedRequest(remote(), { connection: { admit } })).toBe(false)
+  })
+
+  it('prefers admit() over requestRejection() when a Host offers both', () => {
+    const admit = vi.fn(() => ({ rejection: 401 }))
+    const requestRejection = vi.fn(() => undefined)
+    expect(trustedRequest(remote(), { connection: { admit, requestRejection } })).toBe(false)
+    expect(requestRejection).not.toHaveBeenCalled()
+  })
+})
+
+/** The route wrapper on Host 0.2.3+, which passes the Peer it admitted as the
+ *  handler's third argument, against a real `node:http` server. */
+describe('registerPluginRoute with a Host-admitted Peer', () => {
+  async function statusFor(peer: unknown): Promise<number> {
+    const { createServer, request } = await import('node:http')
+    const { registerPluginRoute } = await import('../src/http.ts')
+    const server = createServer()
+    const context = {
+      effect: (register: () => unknown) => { register() },
+      webServer: {
+        register: (route: { handler: (req: never, res: never, peer?: unknown) => Promise<void> }) => {
+          server.on('request', (req, res) => { void route.handler(req as never, res as never, peer) })
+          return () => {}
+        },
+      },
+      logger: { warn: () => {} },
+    }
+    registerPluginRoute(context as never, {
+      mode: 'unary',
+      kind: 'exact',
+      path: '/plugins/dsh-claude/test',
+      methods: ['GET'],
+      budget: 'fast',
+      handler: async () => ({ status: 200, value: { ok: true } }),
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    const port = typeof address === 'object' && address !== null ? address.port : 0
+    try {
+      // A non-loopback authority: the plugin's own check refuses it.
+      return await new Promise<number>((resolve, reject) => {
+        const req = request({ host: '127.0.0.1', port, path: '/plugins/dsh-claude/test', headers: { host: 'dsh.example' } }, res => {
+          res.resume()
+          resolve(res.statusCode ?? 0)
+        })
+        req.on('error', reject)
+        req.end()
+      })
+    } finally {
+      await new Promise<void>(resolve => { server.close(() => resolve()) })
+    }
+  }
+
+  it('serves a request the Host passed a Peer for', async () => {
+    expect(await statusFor({ principal: { kind: 'owner' } })).toBe(200)
+  })
+
+  it('applies its own check when the Host passed no Peer', async () => {
+    expect(await statusFor(undefined)).toBe(403)
+  })
+})

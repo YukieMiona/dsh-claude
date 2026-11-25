@@ -33,17 +33,26 @@ export function trustedRequest(req: IncomingMessage, ctx?: any): boolean {
   return connectionAdmits(req, ctx) || loopbackSameOrigin(req)
 }
 
+/** Host 0.2.3+ admits a request with `admit(req)`, which returns `{ peer }` or
+ *  `{ rejection }`; Hosts up to 0.2.2 offered `requestRejection(req)`, which
+ *  returns `undefined` for an admitted request. Either one is accepted. */
+interface ConnectionFence {
+  admit?(req: IncomingMessage): unknown
+  requestRejection?(req: IncomingMessage): unknown
+}
+
 /** The Host's connection service, when this composition has one.
  *
  *  Looked up with `ctx.get`, never as `ctx.connection`: the plugin does not
  *  declare `connection` in its `inject` (older Hosts have no such service),
  *  and cordis throws on property access to an undeclared service. Reading the
  *  property first made this path fail silently on every request. */
-function connectionService(ctx: any): { requestRejection(req: IncomingMessage): unknown } | undefined {
+function connectionService(ctx: any): ConnectionFence | undefined {
   for (const read of [() => ctx?.get?.('connection'), () => ctx?.connection]) {
     try {
       const conn = read()
-      if (conn !== undefined && conn !== null && typeof conn.requestRejection === 'function') return conn
+      if (conn === undefined || conn === null) continue
+      if (typeof conn.admit === 'function' || typeof conn.requestRejection === 'function') return conn
     } catch {
       // Not available through this accessor; try the next.
     }
@@ -54,7 +63,12 @@ function connectionService(ctx: any): { requestRejection(req: IncomingMessage): 
 function connectionAdmits(req: IncomingMessage, ctx: any): boolean {
   try {
     const conn = connectionService(ctx)
-    return conn !== undefined && conn.requestRejection(req) === undefined
+    if (conn === undefined) return false
+    if (typeof conn.admit === 'function') {
+      const admission = conn.admit(req) as { peer?: unknown } | undefined
+      return admission !== undefined && admission !== null && admission.peer !== undefined
+    }
+    return conn.requestRejection?.(req) === undefined
   } catch {
     return false
   }
@@ -213,12 +227,16 @@ export function registerPluginRoute(ctx: Context, route: PluginRoute): void {
   ctx.effect(() => ctx.webServer.register({
     kind: route.kind,
     path: route.path,
-    handler: async (req, res) => {
+    // Host 0.2.3+ authenticates every route itself (auth defaults to
+    // 'required') and passes the admitted Peer as the third argument; such a
+    // request is already trusted. Older Hosts pass no Peer, so the plugin's
+    // own check still applies there.
+    handler: async (req, res, peer?: unknown) => {
       const method = req.method
       if (!isPluginMethod(method) || !route.methods.includes(method)) {
         return json(res, 405, { error: 'method not allowed' })
       }
-      if (!trustedRequest(req, ctx)) return json(res, 403, { error: 'forbidden' })
+      if (peer === undefined && !trustedRequest(req, ctx)) return json(res, 403, { error: 'forbidden' })
       // Before any await: a disconnect during setup must still cancel.
       const aborted = new AbortController()
       const abort = (): void => { aborted.abort() }
