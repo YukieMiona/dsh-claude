@@ -117,10 +117,14 @@ function imageBlock(data: Uint8Array, mediaType: ImageMediaType): ClaudePromptBl
   }
 }
 
+/** Message sources a turn answers. `sentinel` is a dsh-sentinel wakeup: the
+ *  watch a session registered fired, and its report is the prompt. */
+const PROMPT_SOURCES = new Set(['user', 'sentinel'])
+
 /** The newest direct human message: the one a turn answers. Request-only
  *  user inputs (Host 0.1.7) carry no source and are not that durable turn. */
 function newestDirectUserMessage(messages: GenerateOptions['messages']) {
-  return [...messages].reverse().find(candidate => candidate.role === 'user' && candidate.source?.kind === 'user')
+  return [...messages].reverse().find(candidate => candidate.role === 'user' && PROMPT_SOURCES.has(String(candidate.source?.kind)))
 }
 
 /** Id of the message this turn answers, so the supervisor can recognise a

@@ -835,6 +835,32 @@ describe('Claude supervisor', () => {
     await runtime.dispose()
   })
 
+  it('hands Claude the bridged DSH tools as an MCP server, and none when there are none', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const bridge = { type: 'sdk' as const, name: 'dsh', instance: {} as never }
+    const seen: string[] = []
+    const runtime = new ClaudeSupervisor({
+      runtime: { spawn: () => { throw new Error('fake query must not spawn') } },
+      approval: { request: async () => 'allowed-once' },
+      userQuestions: { ask: async () => ({ answers: [] }) },
+      config: { executablePath: '/local/claude', idleTimeoutMs: 60_000, maxProcesses: 4, defaultModel: 'default', renderMode: 'plugin' },
+      queryFactory: transport.create,
+      sidecar: new ClaudeSidecarRepository({ root: join(tmpdir(), `dsh-claude-bridge-${randomUUID()}`) }),
+      dshTools: sessionId => { seen.push(sessionId); return bridge },
+    } as never)
+    await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
+    expect(transport.queries[0]!.options.mcpServers).toEqual({ dsh: bridge })
+    expect(seen).toEqual(['dsh-session-1'])
+    await runtime.dispose()
+
+    const plain = factory()
+    const other = supervisor(plain.create)
+    await other.runTurn({ agent: fakeAgent().agent, prompt: 'hello' })
+    expect(plain.queries[0]!.options.mcpServers).toBeUndefined()
+    await other.dispose()
+  })
+
   it('tolerates a repeated system/init across turns', async () => {
     const transport = factory()
     const owner = fakeAgent()

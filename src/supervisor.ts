@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import {
   query as claudeQuery,
   type EffortLevel,
+  type McpSdkServerConfigWithInstance,
   type Options as ClaudeOptions,
   type PermissionMode,
   type Query,
@@ -11,6 +12,7 @@ import {
   type Settings as ClaudeSettings,
   type SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk'
+import { DSH_TOOL_BRIDGE_SERVER } from './dsh-tool-bridge.ts'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ApprovalService } from '@deepseek-ai/dsh-user-approval'
 import type { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
@@ -543,6 +545,11 @@ function exitStatus(process: ManagedClaudeProcess | undefined, reason?: string):
 }
 
 /** Root-call activity summary; subagent dispatches lead with Claude's own task description. */
+/** The SDK option that hands Claude the bridged DSH tools, when there are any. */
+function dshToolServers(bridge: McpSdkServerConfigWithInstance | undefined): { mcpServers?: Record<string, McpSdkServerConfigWithInstance> } {
+  return bridge === undefined ? {} : { mcpServers: { [DSH_TOOL_BRIDGE_SERVER]: bridge } }
+}
+
 function rootCallSummary(toolName: string, input: unknown): string {
   if (TASK_TOOL_NAMES.has(toolName)) {
     const description = input !== null && typeof input === 'object'
@@ -602,6 +609,7 @@ export class ClaudeSupervisor {
   readonly #logger: { warn(message: string): void } | undefined
   readonly #hostJobs: ClaudeHostJobs | undefined
   readonly #resolveAgent: (sessionId: string) => Agent | undefined
+  readonly #dshTools: (sessionId: string) => McpSdkServerConfigWithInstance | undefined
   readonly #contextWindows = new Map<string, number>()
   #disposed = false
   #admissionGate: Promise<void> = Promise.resolve()
@@ -636,6 +644,9 @@ export class ClaudeSupervisor {
     hostJobs?: ClaudeHostJobs
     /** Resolve an agent across sessions, decoupled from single-process lifecycles. */
     resolveAgent?: (sessionId: string) => Agent | undefined
+    /** The DSH tools a session's Claude may call, as an in-process MCP server
+     *  (see dsh-tool-bridge.ts); undefined offers none. Built per process. */
+    dshTools?: (sessionId: string) => McpSdkServerConfigWithInstance | undefined
   }) {
     this.#runtime = dependencies.runtime
     this.#approval = dependencies.approval
@@ -649,6 +660,7 @@ export class ClaudeSupervisor {
     this.#logger = dependencies.logger
     this.#hostJobs = dependencies.hostJobs
     this.#resolveAgent = dependencies.resolveAgent ?? (() => undefined)
+    this.#dshTools = dependencies.dshTools ?? (() => undefined)
   }
 
   snapshots(): ClaudeSupervisorSnapshot[] {
@@ -1723,6 +1735,7 @@ export class ClaudeSupervisor {
       // which nobody outside could connect to a DSH session; the DSH session
       // id is the name the owner already has.
       extraArgs: { name: entry.sessionId },
+      ...dshToolServers(this.#dshTools(entry.sessionId)),
       canUseTool,
       hooks: {
         ...createAutoModeEscalation(),

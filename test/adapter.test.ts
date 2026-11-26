@@ -8,11 +8,15 @@ import { CLAUDE_CODE_PROVIDER_IDS } from '../src/constants.ts'
 import { claudeModelRow, claudeModelValue, latestClaudeModels, recordClaudeModels, resetClaudeModels } from '../src/model-catalog.ts'
 import type { ClaudeSupervisor, ClaudeTurnStreamEvent } from '../src/supervisor.ts'
 
-const user = (text: string, kind: 'user' | 'plugin' = 'user') => ({
+const user = (text: string, kind: 'user' | 'plugin' | 'sentinel' = 'user') => ({
   id: crypto.randomUUID(),
   role: 'user',
   content: [{ type: 'text', text }],
-  source: kind === 'user' ? { kind: 'user' } : { kind: 'plugin', plugin: 'test', form: 'notice', summary: 'test' },
+  source: kind === 'user'
+    ? { kind: 'user' }
+    : kind === 'sentinel'
+      ? { kind: 'sentinel', watchIds: ['watch-1'] }
+      : { kind: 'plugin', plugin: 'test', form: 'notice', summary: 'test' },
 }) as unknown as Message
 
 const agent = { id: 'session-1' } as unknown as Agent
@@ -91,6 +95,15 @@ describe('direct prompt resolution', () => {
       user('human prompt'),
       user('injected notice', 'plugin'),
     ], attachmentStore())).resolves.toBe('human prompt')
+  })
+
+  it('answers a sentinel wakeup as the prompt, ahead of the older human message', async () => {
+    // dsh-sentinel delivers a fired watch as a user message with source kind
+    // `sentinel`; reading only `user` would resend the previous prompt.
+    await expect(resolveDirectUserPrompt([
+      user('watch the build flag'),
+      user('[sentinel] watch-1 fired: /tmp/flag changed', 'sentinel'),
+    ], attachmentStore())).resolves.toBe('[sentinel] watch-1 fired: /tmp/flag changed')
   })
 
   it('never forwards DSH system, tool, or plugin context to the Claude turn', async () => {

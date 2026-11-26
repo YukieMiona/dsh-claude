@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import { createDshToolBridge, DEFAULT_BRIDGED_DSH_TOOLS, type DshToolRegistry } from './dsh-tool-bridge.ts'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -70,6 +71,8 @@ export const name = 'llm-claude'
 export const inject = ['llm', 'agents', 'agentPresets', 'commands', 'subprocess', 'approval', 'userQuestions', 'attachments']
 
 export interface Config {
+  /** DSH tools offered to Claude over MCP (`mcp__dsh__<name>`); an empty list offers none. */
+  dshTools?: string[]
   executablePath?: string
   model?: string
   idleTimeoutMs?: number
@@ -84,6 +87,7 @@ export const Config: z<Config> = z.object({
   idleTimeoutMs: z.number().min(1_000).max(2_147_483_647).default(30 * 60 * 1_000),
   maxProcesses: z.number().step(1).min(1).default(4),
   foregroundBashBackgroundMs: z.number().min(0).max(2_147_483_647).default(5 * 60 * 1_000),
+  dshTools: z.array(z.string()).default([...DEFAULT_BRIDGED_DSH_TOOLS]),
 })
 
 const CLAUDE_SCOPE_UNAVAILABLE_MESSAGE = 'agent command scope unavailable (preset route not mounted?)'
@@ -293,6 +297,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     userQuestions: ctx.userQuestions,
     config: supervisorConfig,
     resolveAgent: sessionId => ctx.agents.get(sessionId as never),
+    // DSH tools Claude has no twin of (the sentinel first), as an MCP server.
+    dshTools: sessionId => createDshToolBridge(
+      ctx.get('tools') as DshToolRegistry | undefined,
+      () => ctx.agents.get(sessionId as never),
+      config.dshTools ?? DEFAULT_BRIDGED_DSH_TOOLS,
+    ),
     runDetached: operation => ctx.agents.withoutInitiator(operation),
     sidecar,
     defaultPermissionMode: () => readDefaultPermissionMode(),
