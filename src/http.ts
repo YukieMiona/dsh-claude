@@ -69,7 +69,7 @@ function connectionService(ctx: any): ConnectionFence | undefined {
 
 /** Whether a Peer speaks for the owner: its `principal` is `{ kind: 'owner' }`.
  *
- *  From Host 0.2.1-rc.5 every Peer carries a `principal` fixed when the Host
+ *  From Host 0.2.1-alpha.3 every Peer carries a `principal` fixed when the Host
  *  creates it, and the Host's own privileged routes answer 403 unless it is
  *  the owner; the plugin does the same. Only Host 0.2.3+ passes a Peer to a
  *  route handler, so this strict form is the rule there. */
@@ -83,7 +83,7 @@ export function ownerPeer(peer: unknown): boolean {
  *  admitted as someone else (final), or no verdict (rejected, threw, or no
  *  service), which leaves the decision to the loopback check.
  *
- *  Hosts up to 0.2.1-alpha.1 admit every request as their single operator
+ *  Hosts up to 0.2.1-alpha.2 admit every request as their single operator
  *  Peer, which has no `principal` field; on this path such a Peer is the owner. */
 function connectionVerdict(req: IncomingMessage, ctx: any): 'owner' | 'other' | 'none' {
   try {

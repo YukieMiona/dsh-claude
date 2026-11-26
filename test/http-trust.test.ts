@@ -120,7 +120,7 @@ describe('trustedRequest with a Host 0.2.3+ connection service (admit)', () => {
     expect(trustedRequest(remote(), { connection: { admit } })).toBe(false)
   })
 
-  it('accepts the single operator Peer of a Host up to 0.2.1-alpha.1, which has no principal', () => {
+  it('accepts the single operator Peer of a Host up to 0.2.1-alpha.2, which has no principal', () => {
     const admit = vi.fn(() => ({ peer: { id: 'operator' } }))
     expect(trustedRequest(remote(), { connection: { admit } })).toBe(true)
   })
