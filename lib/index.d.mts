@@ -1,6 +1,6 @@
+import { EffortLevel, McpSdkServerConfigWithInstance, Options, Query, SDKUserMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import z from "@deepseek-ai/schemastery";
 import { SubprocessRuntime } from "@deepseek-ai/dsh-subprocess";
-import { EffortLevel, Options, Query, SDKUserMessage, SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import { Context } from "@deepseek-ai/cordis";
 import { Agent } from "@deepseek-ai/dsh-agent";
 import { CommandDescriptor } from "@deepseek-ai/dsh-commands";
@@ -519,6 +519,9 @@ declare class ClaudeSupervisor {
     hostJobs?: ClaudeHostJobs;
     /** Resolve an agent across sessions, decoupled from single-process lifecycles. */
     resolveAgent?: (sessionId: string) => Agent | undefined;
+    /** The DSH tools a session's Claude may call, as an in-process MCP server
+     *  (see dsh-tool-bridge.ts); undefined offers none. Built per process. */
+    dshTools?: (sessionId: string) => McpSdkServerConfigWithInstance | undefined;
   });
   snapshots(): ClaudeSupervisorSnapshot[];
   supportedCommands(agent: Agent, model?: string): Promise<readonly SlashCommand[]>;
@@ -561,6 +564,8 @@ declare class ClaudeSupervisor {
 declare const name = "llm-claude";
 declare const inject: string[];
 interface Config {
+  /** DSH tools offered to Claude over MCP (`mcp__dsh__<name>`); an empty list offers none. */
+  dshTools?: string[];
   executablePath?: string;
   model?: string;
   idleTimeoutMs?: number;
