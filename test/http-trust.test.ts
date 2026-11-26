@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
-import { trustedRequest } from '../src/http.ts'
+import { ownerPeer, trustedRequest } from '../src/http.ts'
 
 function request(remoteAddress: string | undefined, headers: Record<string, string>): IncomingMessage {
   return { socket: { remoteAddress }, headers } as unknown as IncomingMessage
@@ -108,11 +108,33 @@ describe('trustedRequest with a connection service', () => {
 describe('trustedRequest with a Host 0.2.3+ connection service (admit)', () => {
   const remote = () => request('203.0.113.7', { host: 'dsh.example.com', origin: 'https://dsh.example.com' })
 
-  it('accepts a request admit() returns a Peer for', () => {
-    const admit = vi.fn((_req: IncomingMessage) => ({ peer: {} }))
+  it('accepts a request admit() returns an owner Peer for', () => {
+    const admit = vi.fn((_req: IncomingMessage) => ({ peer: { principal: { kind: 'owner' } } }))
     const req = remote()
     expect(trustedRequest(req, { connection: { admit } })).toBe(true)
     expect(admit).toHaveBeenCalledWith(req)
+  })
+
+  it('rejects a non-loopback request admit() admits as a non-owner Peer', () => {
+    const admit = vi.fn(() => ({ peer: { principal: { kind: 'share-viewer' } } }))
+    expect(trustedRequest(remote(), { connection: { admit } })).toBe(false)
+  })
+
+  it('accepts the single operator Peer of a Host up to 0.2.1-alpha.2, which has no principal', () => {
+    const admit = vi.fn(() => ({ peer: { id: 'operator' } }))
+    expect(trustedRequest(remote(), { connection: { admit } })).toBe(true)
+  })
+
+  it('does not fall back to the loopback check for a local request admitted as a non-owner', () => {
+    const admit = vi.fn(() => ({ peer: { principal: { kind: 'share-viewer' } } }))
+    const local = loopback({ host: 'localhost:3080', origin: 'http://localhost:3080' })
+    expect(trustedRequest(local, { connection: { admit } })).toBe(false)
+  })
+
+  it('still falls back to the loopback check for a local request admit() rejects', () => {
+    const admit = vi.fn(() => ({ rejection: 401 }))
+    const local = loopback({ host: 'localhost:3080', origin: 'http://localhost:3080' })
+    expect(trustedRequest(local, { connection: { admit } })).toBe(true)
   })
 
   it('rejects a non-loopback request admit() rejects', () => {
@@ -177,5 +199,30 @@ describe('registerPluginRoute with a Host-admitted Peer', () => {
 
   it('applies its own check when the Host passed no Peer', async () => {
     expect(await statusFor(undefined)).toBe(403)
+  })
+
+  it('refuses a Peer that does not speak for the owner', async () => {
+    expect(await statusFor({ principal: { kind: 'share-viewer' } })).toBe(403)
+  })
+
+  it('refuses a passed Peer with no principal: only Host 0.2.3+ passes one, and its Peers all have one', async () => {
+    expect(await statusFor({ id: 'operator' })).toBe(403)
+  })
+})
+
+describe('ownerPeer', () => {
+  it('accepts only an owner principal', () => {
+    expect(ownerPeer({ principal: { kind: 'owner' } })).toBe(true)
+  })
+
+  it('refuses non-owner principals, a missing principal, a missing kind and non-objects', () => {
+    expect(ownerPeer({ id: 'operator' })).toBe(false)
+    expect(ownerPeer({ principal: {} })).toBe(false)
+    expect(ownerPeer({ principal: { kind: 'share-viewer' } })).toBe(false)
+    expect(ownerPeer({ principal: undefined })).toBe(false)
+    expect(ownerPeer({ principal: null })).toBe(false)
+    expect(ownerPeer(null)).toBe(false)
+    expect(ownerPeer(undefined)).toBe(false)
+    expect(ownerPeer('owner')).toBe(false)
   })
 })
