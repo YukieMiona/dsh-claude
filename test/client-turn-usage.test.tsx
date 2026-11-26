@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ClaudeTurnUsage, cacheHitRate, formatTurnDuration, turnUsageParts } from '../src/client/ClaudeActivityNode.tsx'
+import { ClaudeTurnUsage, cacheHitRate, formatTurnDuration, subcallLine, turnUsageParts } from '../src/client/ClaudeActivityNode.tsx'
 import { latestTurnUsage, transcriptItemsForStep } from '../src/client/conversation-sidecar.ts'
 import type { ClaudeActivityEvent } from '../src/events.ts'
 import { en } from '../src/client/locales.ts'
@@ -35,6 +35,15 @@ describe('cacheHitRate', () => {
     // A turn that read nothing scores zero rather than dividing by nothing.
     expect(cacheHitRate({ inputTokens: 10 })).toBe(0)
     expect(cacheHitRate({ outputTokens: 10 })).toBeUndefined()
+  })
+})
+
+describe('subcallLine', () => {
+  it('prefers what the call did over the bare summary', () => {
+    expect(subcallLine({ toolUseId: 'a', toolName: 'WebFetch', phase: 'completed', summary: 'Subagent called WebFetch', description: 'Fetched https://example.com' }, t))
+      .toBe('✓ WebFetch · Fetched https://example.com')
+    expect(subcallLine({ toolUseId: 'b', toolName: 'Read', phase: 'started', summary: 'Subagent called Read' }, t))
+      .toBe('● Read · Subagent called Read')
   })
 })
 

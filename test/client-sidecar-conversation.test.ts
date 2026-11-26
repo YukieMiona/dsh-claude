@@ -327,6 +327,27 @@ describe('Claude sidecar conversation projection', () => {
     ])
   })
 
+  it("says what each of a subagent's calls did, not only which tool it was", () => {
+    const items = transcriptItemsForStep([
+      { turn: 2, step: 1, ordinal: 0, kind: 'tool-call', phase: 'started', toolUseId: 'agent-1', toolName: 'Agent', detail: JSON.stringify({ description: 'Review the diff' }) },
+      { turn: 2, step: 1, ordinal: 1, kind: 'subagent', phase: 'started', parentToolUseId: 'agent-1', toolUseId: 'sub-1', toolName: 'WebFetch', summary: 'Subagent called WebFetch', detail: JSON.stringify({ url: 'https://example.com/spec', prompt: 'Summarise' }) },
+      // The result's detail is output: the row keeps the description of its call.
+      { turn: 2, step: 1, ordinal: 2, kind: 'subagent', phase: 'completed', parentToolUseId: 'agent-1', toolUseId: 'sub-1', title: 'Tool completed', detail: '<html>…' },
+      { turn: 2, step: 1, ordinal: 3, kind: 'subagent', phase: 'started', parentToolUseId: 'agent-1', toolUseId: 'sub-2', toolName: 'mcp__plugin_openviking-memory_openviking__read', summary: 'Subagent called mcp__plugin_openviking-memory_openviking__read', detail: JSON.stringify({ uri: 'viking://user/default/memories/x.md' }) },
+      { turn: 2, step: 1, ordinal: 4, kind: 'subagent', phase: 'started', parentToolUseId: 'agent-1', toolUseId: 'sub-3', toolName: 'TaskStop', summary: 'Subagent called TaskStop', detail: JSON.stringify({ task_id: 'b1234' }) },
+      // A record stored before calls kept their input still shows its summary.
+      { turn: 2, step: 1, ordinal: 5, kind: 'subagent', phase: 'started', parentToolUseId: 'agent-1', toolUseId: 'sub-4', toolName: 'Read', summary: 'Subagent called Read' },
+    ], 2, 1)
+    const card = items.flatMap(item => item.kind === 'tools' ? item.tools : []).find(tool => tool.toolUseId === 'agent-1')!
+    expect(card.subcalls.map(call => call.description)).toEqual([
+      'Fetched https://example.com/spec',
+      'openviking read viking://user/default/memories/x.md',
+      'Stopped task b1234',
+      undefined,
+    ])
+    expect(card.subcalls[0]).toMatchObject({ phase: 'completed' })
+  })
+
   it("keeps a background Agent's calls on its card after the lead writes prose", () => {
     // Seen live in a Nami turn: the Agent returned at once, the lead wrote a
     // line, and the subagent's 59 later calls were dropped from the card.

@@ -10,6 +10,9 @@ export interface ClaudeSubcall {
   toolName?: string
   phase?: ClaudeActivityPhase
   summary?: string
+  /** What the call did, read from its input: the URL fetched, the command
+   *  run, the file read. The summary only names the tool. */
+  description?: string
   isError?: boolean
 }
 
@@ -120,11 +123,17 @@ function running(activity: ClaudeActivityEvent): boolean {
 
 function subcallOf(value: ClaudeActivityEvent): ClaudeSubcall | undefined {
   if (value.kind !== 'subagent' || value.toolUseId === undefined) return undefined
+  // Only the call record carries the input; its result's detail is output,
+  // and the description it gives stays when the result merges onto the row.
+  const description = value.phase === 'started' && value.toolName !== undefined && value.detail !== undefined
+    ? toolDescription(value.toolName, inputRecord(value.detail))
+    : undefined
   return {
     toolUseId: value.toolUseId,
     ...(value.toolName === undefined ? {} : { toolName: value.toolName }),
     ...(value.phase === undefined ? {} : { phase: value.phase }),
     ...(value.summary === undefined ? {} : { summary: value.summary }),
+    ...(description === undefined ? {} : { description }),
     ...(value.isError === undefined ? {} : { isError: value.isError }),
   }
 }
@@ -332,6 +341,14 @@ function askedQuestions(input: Record<string, unknown> | undefined): readonly st
     .filter((question): question is string => typeof question === 'string' && question.length > 0)
 }
 
+/** An MCP tool's name without its routing prefix: `mcp__plugin_x_server__read`
+ *  reads as `server read`. Other names are unchanged. */
+function shortToolName(toolName: string): string {
+  const parts = toolName.split('__')
+  if (parts[0] !== 'mcp' || parts.length < 3) return toolName
+  return `${parts[1]!.split('_').pop()} ${parts.slice(2).join('__')}`
+}
+
 function toolDescription(
   toolName: string,
   input: Record<string, unknown> | undefined,
@@ -341,7 +358,10 @@ function toolDescription(
   const path = inputString(input, 'file_path') ?? inputString(input, 'path')
   const pattern = inputString(input, 'pattern') ?? inputString(input, 'query')
   const description = inputString(input, 'description')
-  const target = path ?? pattern
+  // What a tool with no case of its own acted on: MCP tools take a uri, the
+  // Skill tool a skill name, others a url or a command.
+  const target = path ?? pattern ?? inputString(input, 'url') ?? inputString(input, 'uri')
+    ?? inputString(input, 'skill') ?? inputString(input, 'command')
   let completed: string
   let failedAction: string
   switch (toolName) {
@@ -399,8 +419,24 @@ function toolDescription(
       failedAction = 'ask a question'
       break
     }
+    case 'TaskStop': {
+      const task = inputString(input, 'task_id') ?? inputString(input, 'shell_id')
+      completed = task === undefined ? 'Stopped a task' : `Stopped task ${task}`
+      failedAction = task === undefined ? 'stop a task' : `stop task ${task}`
+      break
+    }
+    case 'SendMessage': {
+      const to = inputString(input, 'to')
+      completed = to === undefined ? 'Sent a message' : `Sent a message to ${to}`
+      failedAction = to === undefined ? 'send a message' : `send a message to ${to}`
+      break
+    }
+    case 'SubagentHandback':
+      completed = 'Handed the result back'
+      failedAction = 'hand the result back'
+      break
     default:
-      completed = description ?? `${toolName}${target === undefined ? '' : ` ${target}`}`
+      completed = description ?? `${shortToolName(toolName)}${target === undefined ? '' : ` ${target}`}`
       failedAction = completed.charAt(0).toLowerCase() + completed.slice(1)
   }
   return failed ? `Failed to ${failedAction}` : completed

@@ -115,6 +115,13 @@ export function ensureActivityCss(): void {
   document.head.appendChild(element)
 }
 
+/** One nested call: its state, its tool, and what it did when the input says
+ *  so; otherwise the summary, which names the tool only. */
+export function subcallLine(subcall: ClaudeSubcall, t: Translate): string {
+  const detail = subcall.description ?? subcall.summary
+  return `${subcallGlyph(subcall)} ${subcall.toolName ?? t('subagent')}${detail === undefined ? '' : ` · ${detail}`}`
+}
+
 function subcallGlyph(subcall: ClaudeSubcall): string {
   if (subcall.isError === true || subcall.phase === 'failed') return '×'
   if (subcall.phase === 'started' || subcall.phase === 'updated') return '●'
@@ -168,7 +175,7 @@ function ActivityRow({ row, t }: { row: ClaudeActivityChatData; t: Translate }) 
       {subcalls.length === 0 ? null : (
         <div className="dsh-claude-flow-subcalls">
           {subcalls.map(subcall => (
-            <div key={subcall.toolUseId}>{subcallGlyph(subcall)} {subcall.toolName ?? t('subagent')}{subcall.summary === undefined ? '' : ` · ${subcall.summary}`}</div>
+            <div key={subcall.toolUseId}>{subcallLine(subcall, t)}</div>
           ))}
         </div>
       )}
@@ -401,7 +408,7 @@ export function ClaudeTranscriptToolItem({ tool, t, onBackground }: { tool: Clau
         {tool.subcalls.length === 0 ? null : (
           <div className="dsh-claude-flow-subcalls">
             {tool.subcalls.map(subcall => (
-              <div key={subcall.toolUseId}>{subcallGlyph(subcall)} {subcall.toolName ?? t('subagent')}{subcall.summary === undefined ? '' : ` · ${subcall.summary}`}</div>
+              <div key={subcall.toolUseId}>{subcallLine(subcall, t)}</div>
             ))}
           </div>
         )}
