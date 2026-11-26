@@ -14,16 +14,20 @@ export const DSH_TOOL_BRIDGE_SERVER = 'dsh'
  *  this bridge nothing could register one for a Claude session. */
 export const DEFAULT_BRIDGED_DSH_TOOLS: readonly string[] = ['sentinel_watch', 'sentinel_list', 'sentinel_cancel']
 
-/** The parts of the Host's tool registry the bridge uses. */
+/** The parts of the Host's tool registry the bridge uses, as
+ *  `@deepseek-ai/dsh-tools` 0.2.3 declares them (`lib/types/executor.d.ts`).
+ *  `execute` takes a batch of raw model calls, `arguments` as JSON text. The
+ *  0.1.7 dev dependency still declares a single-call `execute`; typing the
+ *  bridge from it made every bridged call fail on the 0.2.3 Host. */
 export interface DshToolRegistry {
   schemas(scope?: Agent): readonly { name: string; description?: string; parameters?: unknown }[]
-  execute(exec: {
-    callId: string
-    name: string
-    arguments: unknown
-    agent?: Agent
-    signal: AbortSignal
-  }): Promise<{ isError: boolean; content: readonly unknown[] }>
+  execute(input: {
+    readonly calls: readonly { type: 'tool-call'; id: string; name: string; arguments: string }[]
+    readonly signal: AbortSignal
+    readonly agent?: Agent
+  }): Promise<{
+    readonly results: readonly { readonly callId: string; readonly result: { readonly isError?: boolean; readonly content: readonly unknown[] } }[]
+  }>
 }
 
 type ContentBlock = { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
@@ -100,7 +104,16 @@ export function bridgedDshTools(
           return { isError: true, content: [{ type: 'text', text: 'The DSH session behind this Claude session is not available.' }] }
         }
         const signal = (extra as { signal?: AbortSignal } | undefined)?.signal ?? new AbortController().signal
-        const result = await registry.execute({ callId: randomUUID(), name: schema.name, arguments: args, agent: owner, signal })
+        const id = randomUUID()
+        const batch = await registry.execute({
+          calls: [{ type: 'tool-call', id, name: schema.name, arguments: JSON.stringify(args) }],
+          signal,
+          agent: owner,
+        })
+        const result = batch.results.find(item => item.callId === id)?.result
+        if (result === undefined) {
+          return { isError: true, content: [{ type: 'text', text: `DSH returned no result for ${schema.name}.` }] }
+        }
         return { ...(result.isError ? { isError: true } : {}), content: mcpContent(result.content) }
       })]
     })

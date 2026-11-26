@@ -22,7 +22,7 @@ function registry(overrides: Partial<DshToolRegistry> = {}): DshToolRegistry & {
       },
       { name: 'run_code', description: 'Run a program.', parameters: { type: 'object', properties: { code: { type: 'string' } } } },
     ],
-    execute: vi.fn(async () => ({ isError: false, content: [{ type: 'text', text: 'watch-1 registered' }] })),
+    execute: vi.fn(async (input: { calls: readonly { id: string }[] }) => ({ results: [{ callId: input.calls[0]!.id, result: { isError: false, content: [{ type: 'text', text: 'watch-1 registered' }] } }] })),
     ...overrides,
   } as DshToolRegistry & { execute: ReturnType<typeof vi.fn> }
 }
@@ -39,12 +39,15 @@ describe('DSH tool bridge', () => {
     const [watch] = bridgedDshTools(host, () => agent, ['sentinel_watch'])
     const args = { kind: 'file', target: '/tmp/flag', note: 'wake me' }
     const result = await watch!.handler(args as never, {})
-    expect(host.execute).toHaveBeenCalledWith(expect.objectContaining({ name: 'sentinel_watch', arguments: args, agent }))
+    expect(host.execute).toHaveBeenCalledWith(expect.objectContaining({
+      calls: [expect.objectContaining({ type: 'tool-call', name: 'sentinel_watch', arguments: JSON.stringify(args) })],
+      agent,
+    }))
     expect(result).toEqual({ content: [{ type: 'text', text: 'watch-1 registered' }] })
   })
 
   it('reports a failed call as an MCP error', async () => {
-    const host = registry({ execute: vi.fn(async () => ({ isError: true, content: [{ type: 'text', text: 'bad target' }] })) })
+    const host = registry({ execute: vi.fn(async (input: { calls: readonly { id: string }[] }) => ({ results: [{ callId: input.calls[0]!.id, result: { isError: true, content: [{ type: 'text', text: 'bad target' }] } }] })) })
     const [watch] = bridgedDshTools(host, () => agent, ['sentinel_watch'])
     await expect(watch!.handler({ kind: 'file', target: 'x', note: 'n' } as never, {})).resolves.toEqual({
       isError: true,
