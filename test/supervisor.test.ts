@@ -761,46 +761,53 @@ describe('Claude supervisor', () => {
   })
 
   it("times the main conversation's own output, leaving out tool runs and subagents", async () => {
+    // The clock reads the time each frame carries at the moment the supervisor
+    // takes it from the stream: deterministic, whatever the host's load.
     let now = 1_000_000
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    // `for await` reads `next` once, when the supervisor starts reading the
+    // stream inside runTurn, so the wrapper goes on the queue type up front.
+    const stamped = new WeakMap<object, number>()
+    const take = AsyncQueue.prototype.next
+    const reader = vi.spyOn(AsyncQueue.prototype, 'next').mockImplementation(async function (this: AsyncQueue<unknown>) {
+      const result = await take.call(this)
+      const at = result.done === true || result.value === null || typeof result.value !== 'object' ? undefined : stamped.get(result.value)
+      if (at !== undefined) now = at
+      return result
+    })
     try {
       const transport = factory()
       const owner = fakeAgent()
       const runtime = supervisor(transport.create)
       const output = await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
       const query = transport.queries[0]!
-      // Read the turn while it runs: the supervisor waits on its reader.
-      const events = collect(output)
-      const stream = (event: Record<string, unknown>, parent: string | null = null) => query.push({
-        type: 'stream_event', parent_tool_use_id: parent, event,
-      } as unknown as SDKMessage)
-      // The supervisor reads the stream on its own schedule: let it catch up
-      // before the clock moves, or every frame is read at the same instant.
-      const tick = async (ms: number) => {
-        for (let i = 0; i < 20; i += 1) await new Promise(resolve => setImmediate(resolve))
-        now += ms
+      let clockAt = 1_000_000
+      const at = (ms: number) => { clockAt += ms }
+      const stream = (event: Record<string, unknown>, parent: string | null = null) => {
+        const frame = { type: 'stream_event', parent_tool_use_id: parent, event } as unknown as SDKMessage
+        stamped.set(frame as object, clockAt)
+        query.push(frame)
       }
       query.push(init())
       // Request 1: 400 ms before its first block, then 2 s of output, 100 tokens.
       stream({ type: 'message_start', message: {} })
-      await tick(400)
+      at(400)
       stream({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } })
-      await tick(2_000)
+      at(2_000)
       stream({ type: 'message_delta', usage: { output_tokens: 100 } })
       // A tool runs for a minute, and a subagent streams meanwhile: neither counts.
-      await tick(60_000)
+      at(60_000)
       stream({ type: 'message_start', message: {} }, 'task-1')
       stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }, 'task-1')
-      await tick(5_000)
+      at(5_000)
       stream({ type: 'message_delta', usage: { output_tokens: 900 } }, 'task-1')
       // Request 2: 2 s of output, 100 tokens.
       stream({ type: 'message_start', message: {} })
       stream({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
-      await tick(2_000)
+      at(2_000)
       stream({ type: 'message_delta', usage: { output_tokens: 100 } })
-      await tick(0)
       query.push(result('hello'))
-      await events
+      await collect(output)
       const snapshot = await projection(runtime)
       const recorded = snapshot.activities.filter(activity => activity.kind === 'usage')
       expect(recorded).toContainEqual(expect.objectContaining({
@@ -808,6 +815,7 @@ describe('Claude supervisor', () => {
       }))
       await runtime.dispose()
     } finally {
+      reader.mockRestore()
       clock.mockRestore()
     }
   })
