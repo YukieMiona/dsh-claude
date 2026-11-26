@@ -18,7 +18,7 @@ import { CLAUDE_CODE_PRESET_ID, CLAUDE_CODE_PROVIDER_IDS, CLAUDE_STEERING_SERVIC
 import { CLAUDE_COMMANDS_SERVICE, projectClaudeCommands, type ClaudeAgentCommandService, type ClaudeCommandView } from './command-bridge.ts'
 import { ClaudeSidecarRepository } from './sidecar.ts'
 import { resolveClaudeExecutable } from './executable.ts'
-import { ClaudeProcessLimitError, ClaudeSupervisor, ClaudeTurnBusyError, type ClaudeSteeringOutcome, type ClaudeSteeringService } from './supervisor.ts'
+import { ClaudeMetadataDeferredError, ClaudeProcessLimitError, ClaudeSupervisor, ClaudeTurnBusyError, type ClaudeSteeringOutcome, type ClaudeSteeringService } from './supervisor.ts'
 import { mountClaudeSteering } from './steering.ts'
 import { createClaudeCodeAdapter } from './adapter.ts'
 import { claudeBridgeDiagnostics, registerClaudeDoctorRoutes, type ClaudeBootFailure, type ClaudeBridgeDiagnostic } from './doctor-routes.ts'
@@ -141,7 +141,7 @@ export function mountClaudeMetadata(
    *  own idle transition; a full pool is another session's turn, so the catalog
    *  keeps its bounded retry, just without the warning. */
   const deferrable = (error: unknown): boolean =>
-    error instanceof ClaudeTurnBusyError || error instanceof ClaudeProcessLimitError
+    error instanceof ClaudeTurnBusyError || error instanceof ClaudeProcessLimitError || error instanceof ClaudeMetadataDeferredError
 
   const isScopeUnavailable = (error: unknown): boolean => {
     if (error instanceof Error) return error.message === CLAUDE_SCOPE_UNAVAILABLE_MESSAGE

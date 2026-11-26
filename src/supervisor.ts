@@ -241,6 +241,15 @@ export class ClaudeProtocolError extends Error {
   }
 }
 
+/** A metadata request gave way to a user turn before it started. The caller
+ *  asks again later; the turn must not wait behind metadata processes. */
+export class ClaudeMetadataDeferredError extends Error {
+  constructor() {
+    super('Claude metadata request deferred for a user turn')
+    this.name = 'ClaudeMetadataDeferredError'
+  }
+}
+
 export class ClaudeProcessLimitError extends Error {
   constructor(maxProcesses: number) {
     super(`Claude Code process limit reached (${maxProcesses}) and no idle session can be evicted`)
@@ -362,6 +371,10 @@ interface SupervisorEntry {
    *  Their results name no user message, which is the only way to tell them
    *  from the answer to a prompt this plugin sent. */
   scheduledTurnsOpen: number
+  /** The command of each root Bash call, by toolUseId, so a call that goes to
+   *  the background shows its command in the Host job list (`$ <command>`);
+   *  the task frame carries only the description. Bounded, oldest out. */
+  bashCommands: Map<string, string>
   /** Whether this CLI names the prompt each result answers. When it does, a
    *  result naming none is never the answer to a prompt this plugin sent. */
   namesPrompts: boolean
@@ -407,6 +420,8 @@ interface MetadataAdmission {
   sessionId: string
   cancellation: AbortController
   started: boolean
+  /** Cancelled because a user turn arrived, not because the caller stopped. */
+  deferred: boolean
   completion: Promise<void>
   complete: () => void
 }
@@ -545,6 +560,25 @@ function exitStatus(process: ManagedClaudeProcess | undefined, reason?: string):
 }
 
 /** Root-call activity summary; subagent dispatches lead with Claude's own task description. */
+const MAX_REMEMBERED_BASH_COMMANDS = 64
+
+/** Keep a root Bash call's command until its task, if any, registers. */
+function rememberBashCommand(commands: Map<string, string>, toolUseId: string, toolName: string, input: unknown): void {
+  if (toolName !== 'Bash' || input === null || typeof input !== 'object') return
+  const command = (input as Record<string, unknown>).command
+  if (typeof command !== 'string' || command.trim().length === 0) return
+  commands.set(toolUseId, command)
+  while (commands.size > MAX_REMEMBERED_BASH_COMMANDS) commands.delete(commands.keys().next().value as string)
+}
+
+/** What the Host job list shows for a task. The Host draws a Bash job as
+ *  `$ <label>`, so a background command is labelled with its command; other
+ *  tasks, and a command never seen, keep the CLI's description. */
+function hostJobLabel(task: { taskType?: string; toolUseId?: string; description: string }, commands: ReadonlyMap<string, string>): string {
+  if (hostJobKind(task.taskType) !== 'bash' || task.toolUseId === undefined) return task.description
+  return commands.get(task.toolUseId) ?? task.description
+}
+
 /** The SDK option that hands Claude the bridged DSH tools, when there are any. */
 function dshToolServers(bridge: McpSdkServerConfigWithInstance | undefined): { mcpServers?: Record<string, McpSdkServerConfigWithInstance> } {
   return bridge === undefined ? {} : { mcpServers: { [DSH_TOOL_BRIDGE_SERVER]: bridge } }
@@ -1057,6 +1091,11 @@ export class ClaudeSupervisor {
         admission.abortListener = abortListener
         request.signal.addEventListener('abort', abortListener, { once: true })
       }
+      // Metadata requests share the admission gate, and each one for a session
+      // with no process starts and resumes a CLI. After a plugin reload every
+      // loaded Claude session asks at once, so a user turn waited minutes
+      // behind them. A request that has not started yet gives way.
+      this.#deferMetadataAdmissions()
       this.#turnAdmissions.push(admission)
       this.#scheduleTurnAdmissions()
     })
@@ -1380,6 +1419,7 @@ export class ClaudeSupervisor {
       sessionId: agent.id as string,
       cancellation: new AbortController(),
       started: false,
+      deferred: false,
       completion: new Promise<void>(done => { complete = done }),
       complete: () => { complete?.() },
     }
@@ -1406,7 +1446,9 @@ export class ClaudeSupervisor {
       }
     }).finally(() => { this.#finishMetadataAdmission(admission) })
     this.#admissionGate = admitted.then(() => undefined, () => undefined)
-    return withAbort(admitted, admission.cancellation.signal)
+    return withAbort(admitted, admission.cancellation.signal).catch((error: unknown) => {
+      throw admission.deferred ? new ClaudeMetadataDeferredError() : error
+    })
   }
 
   async #metadataEntry(
@@ -1540,6 +1582,13 @@ export class ClaudeSupervisor {
       if (!admission.started) this.#finishMetadataAdmission(admission)
     }
     return cancelled.map(admission => admission.completion)
+  }
+
+  #deferMetadataAdmissions(): void {
+    for (const admission of this.#metadataAdmissions) {
+      if (!admission.started) admission.deferred = true
+    }
+    void this.#cancelMetadataAdmissions(admission => admission.deferred)
   }
 
   #cancelTurnAdmissions(
@@ -1687,6 +1736,7 @@ export class ClaudeSupervisor {
       tasks: new Map<string, ClaudeTaskInfo>(),
       scheduleCalls: new Map(),
       scheduledTurnsOpen: 0,
+      bashCommands: new Map(),
       namesPrompts: false,
       sentPrompts: new Set<string>(),
       taskBoard: new ClaudeTaskBoard(),
@@ -2105,6 +2155,7 @@ export class ClaudeSupervisor {
         }
         if (message.parentToolUseId === undefined) {
           active.openCalls.set(message.toolUseId, message.toolName)
+          rememberBashCommand(entry.bashCommands, message.toolUseId, message.toolName, message.input)
           this.#armAutoBackground(entry, active, message.toolUseId, message.toolName, message.input)
         }
         return
@@ -2276,7 +2327,7 @@ export class ClaudeSupervisor {
       // Detached work and subagents (long-running even in the foreground) go
       // to the Host job list; a blocking Bash call stays a tool card.
       if ((message.backgrounded === true || hostJobKind(next.taskType) === 'subagent') && message.skipTranscript !== true) {
-        this.#hostJobs?.started(entry.sessionId, taskId, hostJobKind(next.taskType), next.description, () => entry.query.stopTask(taskId))
+        this.#hostJobs?.started(entry.sessionId, taskId, hostJobKind(next.taskType), hostJobLabel(next, entry.bashCommands), () => entry.query.stopTask(taskId))
       }
     } else {
       const line = hostJobProgress(message)
@@ -2297,7 +2348,7 @@ export class ClaudeSupervisor {
     let changed = false
     for (const task of tasks) {
       if (task.ambient !== true) {
-        this.#hostJobs?.started(entry.sessionId, task.taskId, hostJobKind(task.taskType), task.description, () => entry.query.stopTask(task.taskId))
+        this.#hostJobs?.started(entry.sessionId, task.taskId, hostJobKind(task.taskType), hostJobLabel(task, entry.bashCommands), () => entry.query.stopTask(task.taskId))
       }
       const existing = entry.tasks.get(task.taskId)
       if (existing === undefined) {

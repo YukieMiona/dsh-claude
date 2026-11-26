@@ -22,6 +22,7 @@ import {
   CLAUDE_INTERRUPT_TIMEOUT_MS,
   CLAUDE_METADATA_TIMEOUT_MS,
   ClaudeOutcomeUnknownError,
+  ClaudeMetadataDeferredError,
   ClaudeProcessLimitError,
   ClaudeSupervisor,
   ClaudeTurnBusyError,
@@ -439,6 +440,28 @@ describe('Claude supervisor', () => {
     expect(SYSTEM_PROMPT_APPEND).toContain('[name](<path>)')
     transport.queries[0]!.push(init())
     await catalog
+    await runtime.dispose()
+  })
+
+  it('lets a user turn start before queued metadata requests of other sessions', async () => {
+    const transport = factory()
+    const [first, second, third, user] = ['a', 'b', 'c', 'user'].map(id => fakeAgent(id)) as [ReturnType<typeof fakeAgent>, ReturnType<typeof fakeAgent>, ReturnType<typeof fakeAgent>, ReturnType<typeof fakeAgent>]
+    const runtime = supervisor(transport.create)
+    const running = runtime.supportedCommands(first.agent)
+    await vi.waitFor(() => expect(transport.queries).toHaveLength(1))
+    const queued = [runtime.supportedCommands(second.agent), runtime.supportedCommands(third.agent)]
+    const output = runtime.runTurn({ agent: user.agent, prompt: 'work' })
+
+    transport.queries[0]!.push(init())
+    await running
+    for (const request of queued) await expect(request).rejects.toBeInstanceOf(ClaudeMetadataDeferredError)
+    await vi.waitFor(() => expect(transport.queries).toHaveLength(2))
+    expect(transport.queries[1]!.options.extraArgs).toMatchObject({ name: user.agent.id })
+    const query = transport.queries[1]!
+    query.push(init())
+    query.push(result('done'))
+    await collect(await output)
+    expect(transport.queries).toHaveLength(2)
     await runtime.dispose()
   })
 
@@ -1066,6 +1089,50 @@ describe('Claude supervisor', () => {
     } as SDKMessage)
     await expect(collect(output)).rejects.toThrow(/api_error/)
     expect(runtime.snapshots()[0]).toMatchObject({ state: 'idle', claudeSessionId: 'claude-session-1' })
+    await runtime.dispose()
+  })
+
+  it('labels a background Bash job with its command, which the Host draws after "$"', async () => {
+    const transport = factory()
+    const owner = fakeAgent()
+    const started: Array<{ kind: string; label: string }> = []
+    const runtime = new ClaudeSupervisor({
+      runtime: { spawn: () => { throw new Error('fake query must not spawn') } },
+      approval: { request: async () => 'allowed-once' },
+      userQuestions: { ask: async () => ({ answers: [] }) },
+      config: { executablePath: '/local/claude', idleTimeoutMs: 60_000, maxProcesses: 4, defaultModel: 'default', renderMode: 'plugin' },
+      queryFactory: transport.create,
+      sidecar: new ClaudeSidecarRepository({ root: join(tmpdir(), `dsh-claude-jobs-${randomUUID()}`) }),
+      hostJobs: {
+        started: (_session: string, _task: string, kind: string, label: string) => { started.push({ kind, label }) },
+        progress: () => undefined,
+        settled: () => undefined,
+        noteOutput: () => undefined,
+      },
+    } as never)
+    const output = await runtime.runTurn({ agent: owner.agent, prompt: 'hello' })
+    const query = transport.queries[0]!
+    query.push(init())
+    query.push({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'tool_use', id: 'bash-1', name: 'Bash', input: { command: 'pnpm check > check.log 2>&1', description: 'Run the full check', run_in_background: true } }] },
+    } as SDKMessage)
+    query.push({
+      type: 'system', subtype: 'task_started', task_id: 'task-1', tool_use_id: 'bash-1',
+      description: 'Run the full check', task_type: 'local_bash', is_backgrounded: true, session_id: 'claude-session-1',
+    } as unknown as SDKMessage)
+    query.push({
+      type: 'system', subtype: 'task_started', task_id: 'task-2',
+      description: 'Explore the repo', task_type: 'local_agent', session_id: 'claude-session-1',
+    } as unknown as SDKMessage)
+    // The turn stays open while its background work runs; the jobs register now.
+    void collect(output)
+    await vi.waitFor(() => { expect(started).toHaveLength(2) })
+    expect(started).toEqual([
+      { kind: 'bash', label: 'pnpm check > check.log 2>&1' },
+      { kind: 'subagent', label: 'Explore the repo' },
+    ])
     await runtime.dispose()
   })
 
