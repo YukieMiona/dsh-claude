@@ -5,6 +5,24 @@ import { normalizeSdkMessage } from '../src/sdk-messages.ts'
 const sdk = (value: unknown) => value as SDKMessage
 
 describe('Claude SDK message normalization', () => {
+  it('gives a settled task the output path as its detail, not the raw notification', () => {
+    const [record] = normalizeSdkMessage(sdk({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'bvnd3ovwz',
+      tool_use_id: 'toolu_1',
+      status: 'completed',
+      output_file: '/tmp/tasks/bvnd3ovwz.output',
+      summary: 'Monitor "check" stream ended',
+      session_id: 'session-1',
+      uuid: 'u-1',
+    }))
+    expect(record).toMatchObject({ kind: 'subagent', phase: 'completed', title: 'Monitor "check" stream ended', detail: '/tmp/tasks/bvnd3ovwz.output' })
+    const [bare] = normalizeSdkMessage(sdk({ type: 'system', subtype: 'task_notification', task_id: 't', status: 'completed', session_id: 's', uuid: 'u' }))
+    expect(bare).not.toHaveProperty('detail')
+  })
+
+
   it('normalizes initialization without authentication material', () => {
     expect(normalizeSdkMessage(sdk({
       type: 'system',

@@ -139,13 +139,22 @@ function activityState(activity: ClaudeActivityEvent, running: boolean): 'done' 
   return 'done'
 }
 
+/** The text after a row's title. A task notification's summary is also its
+ *  title, so the row then says its state instead of the same sentence twice. */
+export function activitySummary(activity: ClaudeActivityEvent, running: boolean, t: Translate): string {
+  const own = activity.summary === title(activity) ? undefined : activity.summary
+  if (own !== undefined) return own
+  const state = activityState(activity, running)
+  return running ? t('running') : state === 'error' ? t('failed') : t('done')
+}
+
 function ActivityRow({ row, t }: { row: ClaudeActivityChatData; t: Translate }) {
   const { activity, running, subcalls } = row
   const [open, setOpen] = useState(false)
   const state = activityState(activity, running)
   const detail = activity.detail
   const expandable = detail !== undefined || subcalls.length > 0 || activity.kind === 'thinking' || activity.kind === 'steering'
-  const summary = activity.summary ?? (running ? t('running') : state === 'error' ? t('failed') : t('done'))
+  const summary = activitySummary(activity, running, t)
   const body = activity.kind === 'thinking' || activity.kind === 'steering' ? activity.summary : detail
   const icon = activity.kind === 'thinking'
     ? <IconThinkOutlineRegular size={14} />

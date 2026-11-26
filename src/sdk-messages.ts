@@ -377,7 +377,9 @@ function normalizeSystem(message: Record<string, unknown>): NormalizedSdkMessage
       kind: 'subagent',
       title: summary ?? taskId ?? 'Claude subagent finished',
       phase: failed || stopped ? 'failed' : 'completed',
-      detail: message,
+      // The row body: where the output is. The raw notification only repeats
+      // the title and adds ids no reader needs.
+      ...(outputFile === undefined ? {} : { detail: outputFile }),
       ...(taskId === undefined ? {} : { taskId }),
       ...(taskToolUseId === undefined ? {} : { toolUseId: taskToolUseId }),
       taskStatus,

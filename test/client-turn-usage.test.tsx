@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ClaudeTurnUsage, cacheHitRate, formatTurnDuration, subcallLine, turnUsageParts } from '../src/client/ClaudeActivityNode.tsx'
+import { ClaudeTurnUsage, activitySummary, cacheHitRate, formatTurnDuration, subcallLine, turnUsageParts } from '../src/client/ClaudeActivityNode.tsx'
 import { latestTurnUsage, transcriptItemsForStep } from '../src/client/conversation-sidecar.ts'
 import type { ClaudeActivityEvent } from '../src/events.ts'
 import { en } from '../src/client/locales.ts'
@@ -44,6 +44,22 @@ describe('subcallLine', () => {
       .toBe('✓ WebFetch · Fetched https://example.com')
     expect(subcallLine({ toolUseId: 'b', toolName: 'Read', phase: 'started', summary: 'Subagent called Read' }, t))
       .toBe('● Read · Subagent called Read')
+  })
+})
+
+describe('activitySummary', () => {
+  const row = (summary: string | undefined): ClaudeActivityEvent => ({
+    turn: 1, step: 1, ordinal: 1, kind: 'subagent', phase: 'completed', title: 'Monitor "check" stream ended',
+    ...(summary === undefined ? {} : { summary }),
+  })
+
+  it('says the state when the summary only repeats the title', () => {
+    expect(activitySummary(row('Monitor "check" stream ended'), false, t)).toBe(en.done)
+  })
+
+  it('keeps a summary that adds something', () => {
+    expect(activitySummary(row('exit code 1'), false, t)).toBe('exit code 1')
+    expect(activitySummary(row(undefined), true, t)).toBe(en.running)
   })
 })
 
