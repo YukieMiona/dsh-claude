@@ -60,13 +60,27 @@ function connectionService(ctx: any): ConnectionFence | undefined {
   return undefined
 }
 
+/** Whether a Peer the Host admitted speaks for the owner.
+ *
+ *  From Host 0.2.1 every Peer carries a `principal`, and the Host's own
+ *  privileged routes answer 403 unless it is `{ kind: 'owner' }`; the plugin
+ *  does the same. Hosts up to 0.2.0 admit every request as their single
+ *  operator Peer, which has no `principal` field, so a Peer without one is the
+ *  owner there. */
+export function ownerPeer(peer: unknown): boolean {
+  if (peer === undefined || peer === null || typeof peer !== 'object') return false
+  if (!('principal' in peer)) return true
+  const principal = (peer as { principal?: { kind?: unknown } }).principal
+  return principal?.kind === 'owner'
+}
+
 function connectionAdmits(req: IncomingMessage, ctx: any): boolean {
   try {
     const conn = connectionService(ctx)
     if (conn === undefined) return false
     if (typeof conn.admit === 'function') {
       const admission = conn.admit(req) as { peer?: unknown } | undefined
-      return admission !== undefined && admission !== null && admission.peer !== undefined
+      return admission !== undefined && admission !== null && ownerPeer(admission.peer)
     }
     return conn.requestRejection?.(req) === undefined
   } catch {
@@ -229,14 +243,15 @@ export function registerPluginRoute(ctx: Context, route: PluginRoute): void {
     path: route.path,
     // Host 0.2.3+ authenticates every route itself (auth defaults to
     // 'required') and passes the admitted Peer as the third argument; such a
-    // request is already trusted. Older Hosts pass no Peer, so the plugin's
-    // own check still applies there.
+    // request is trusted when that Peer is the owner. Older Hosts pass no
+    // Peer, so the plugin's own check still applies there.
     handler: async (req, res, peer?: unknown) => {
       const method = req.method
       if (!isPluginMethod(method) || !route.methods.includes(method)) {
         return json(res, 405, { error: 'method not allowed' })
       }
-      if (peer === undefined && !trustedRequest(req, ctx)) return json(res, 403, { error: 'forbidden' })
+      const trusted = peer === undefined ? trustedRequest(req, ctx) : ownerPeer(peer)
+      if (!trusted) return json(res, 403, { error: 'forbidden' })
       // Before any await: a disconnect during setup must still cancel.
       const aborted = new AbortController()
       const abort = (): void => { aborted.abort() }
