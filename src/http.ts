@@ -10,10 +10,13 @@ const LOOPBACK_AUTHORITY = /^(?:127\.0\.0\.1|\[?::1\]?|localhost)(?::\d+)?$/i
 
 /** Accept a plugin-private route request when either of two paths admits it.
  *
- *  1. The Host's connection service, when present, says `requestRejection(req)
- *     === undefined`. This path carries remote access: it applies the
- *     operator's configured trusted hosts (a reverse proxy, a LAN address) and
- *     browser authentication. A rejection or a throw from it is not final.
+ *  1. The Host's connection service, when present. With `admit(req)` (Host
+ *     0.1.7+), a request is trusted when the Host admits it as the owner, and
+ *     refused, with no fallback, when the Host admits it as anyone else. With
+ *     only `requestRejection(req)` (older Hosts), `=== undefined` admits it.
+ *     This path carries remote access: it applies the operator's configured
+ *     trusted hosts (a reverse proxy, a LAN address) and browser
+ *     authentication. A rejection or a throw from it is not final.
  *  2. Otherwise, the strict loopback check that was the only rule before the
  *     connection service was consulted: a loopback socket, not `cross-site`, a
  *     Host header that is a literal loopback authority, and an Origin (if any)
@@ -30,12 +33,16 @@ const LOOPBACK_AUTHORITY = /^(?:127\.0\.0\.1|\[?::1\]?|localhost)(?::\d+)?$/i
  *  loopback socket: same-origin by every other measure. Only requiring the
  *  authority itself to be `localhost`, `127.0.0.1` or `[::1]` refuses it. */
 export function trustedRequest(req: IncomingMessage, ctx?: any): boolean {
-  return connectionAdmits(req, ctx) || loopbackSameOrigin(req)
+  const verdict = connectionVerdict(req, ctx)
+  if (verdict === 'owner') return true
+  if (verdict === 'other') return false
+  return loopbackSameOrigin(req)
 }
 
-/** Host 0.2.3+ admits a request with `admit(req)`, which returns `{ peer }` or
- *  `{ rejection }`; Hosts up to 0.2.2 offered `requestRejection(req)`, which
- *  returns `undefined` for an admitted request. Either one is accepted. */
+/** The connection service's fence. `admit(req)` (Host 0.1.7+) returns
+ *  `{ peer }` or `{ rejection }`; `requestRejection(req)` (beside `admit` up
+ *  to 0.2.2) returns `undefined` for an admitted request.
+ *  `admit` is preferred when present; 0.2.3 has only `admit`. */
 interface ConnectionFence {
   admit?(req: IncomingMessage): unknown
   requestRejection?(req: IncomingMessage): unknown
@@ -60,31 +67,38 @@ function connectionService(ctx: any): ConnectionFence | undefined {
   return undefined
 }
 
-/** Whether a Peer the Host admitted speaks for the owner.
+/** Whether a Peer speaks for the owner: its `principal` is `{ kind: 'owner' }`.
  *
- *  From Host 0.2.1 every Peer carries a `principal`, and the Host's own
- *  privileged routes answer 403 unless it is `{ kind: 'owner' }`; the plugin
- *  does the same. Hosts up to 0.2.0 admit every request as their single
- *  operator Peer, which has no `principal` field, so a Peer without one is the
- *  owner there. */
+ *  From Host 0.2.1-rc.5 every Peer carries a `principal` fixed when the Host
+ *  creates it, and the Host's own privileged routes answer 403 unless it is
+ *  the owner; the plugin does the same. Only Host 0.2.3+ passes a Peer to a
+ *  route handler, so this strict form is the rule there. */
 export function ownerPeer(peer: unknown): boolean {
   if (peer === undefined || peer === null || typeof peer !== 'object') return false
-  if (!('principal' in peer)) return true
-  const principal = (peer as { principal?: { kind?: unknown } }).principal
+  const principal = (peer as { principal?: { kind?: unknown } | null }).principal
   return principal?.kind === 'owner'
 }
 
-function connectionAdmits(req: IncomingMessage, ctx: any): boolean {
+/** What the connection service says about a request: admitted as the owner,
+ *  admitted as someone else (final), or no verdict (rejected, threw, or no
+ *  service), which leaves the decision to the loopback check.
+ *
+ *  Hosts up to 0.2.1-alpha.1 admit every request as their single operator
+ *  Peer, which has no `principal` field; on this path such a Peer is the owner. */
+function connectionVerdict(req: IncomingMessage, ctx: any): 'owner' | 'other' | 'none' {
   try {
     const conn = connectionService(ctx)
-    if (conn === undefined) return false
+    if (conn === undefined) return 'none'
     if (typeof conn.admit === 'function') {
-      const admission = conn.admit(req) as { peer?: unknown } | undefined
-      return admission !== undefined && admission !== null && ownerPeer(admission.peer)
+      const admission = conn.admit(req) as { peer?: unknown } | undefined | null
+      const peer = admission?.peer
+      if (peer === undefined || peer === null || typeof peer !== 'object') return 'none'
+      if (!('principal' in peer)) return 'owner'
+      return ownerPeer(peer) ? 'owner' : 'other'
     }
-    return conn.requestRejection?.(req) === undefined
+    return conn.requestRejection?.(req) === undefined ? 'owner' : 'none'
   } catch {
-    return false
+    return 'none'
   }
 }
 

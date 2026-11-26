@@ -120,9 +120,21 @@ describe('trustedRequest with a Host 0.2.3+ connection service (admit)', () => {
     expect(trustedRequest(remote(), { connection: { admit } })).toBe(false)
   })
 
-  it('accepts the single operator Peer of a Host up to 0.2.0, which has no principal', () => {
+  it('accepts the single operator Peer of a Host up to 0.2.1-alpha.1, which has no principal', () => {
     const admit = vi.fn(() => ({ peer: { id: 'operator' } }))
     expect(trustedRequest(remote(), { connection: { admit } })).toBe(true)
+  })
+
+  it('does not fall back to the loopback check for a local request admitted as a non-owner', () => {
+    const admit = vi.fn(() => ({ peer: { principal: { kind: 'share-viewer' } } }))
+    const local = loopback({ host: 'localhost:3080', origin: 'http://localhost:3080' })
+    expect(trustedRequest(local, { connection: { admit } })).toBe(false)
+  })
+
+  it('still falls back to the loopback check for a local request admit() rejects', () => {
+    const admit = vi.fn(() => ({ rejection: 401 }))
+    const local = loopback({ host: 'localhost:3080', origin: 'http://localhost:3080' })
+    expect(trustedRequest(local, { connection: { admit } })).toBe(true)
   })
 
   it('rejects a non-loopback request admit() rejects', () => {
@@ -192,15 +204,20 @@ describe('registerPluginRoute with a Host-admitted Peer', () => {
   it('refuses a Peer that does not speak for the owner', async () => {
     expect(await statusFor({ principal: { kind: 'share-viewer' } })).toBe(403)
   })
+
+  it('refuses a passed Peer with no principal: only Host 0.2.3+ passes one, and its Peers all have one', async () => {
+    expect(await statusFor({ id: 'operator' })).toBe(403)
+  })
 })
 
 describe('ownerPeer', () => {
-  it('accepts an owner Peer and a Peer without a principal (Host up to 0.2.0)', () => {
+  it('accepts only an owner principal', () => {
     expect(ownerPeer({ principal: { kind: 'owner' } })).toBe(true)
-    expect(ownerPeer({ id: 'operator' })).toBe(true)
   })
 
-  it('refuses non-owner principals, a missing kind and non-objects', () => {
+  it('refuses non-owner principals, a missing principal, a missing kind and non-objects', () => {
+    expect(ownerPeer({ id: 'operator' })).toBe(false)
+    expect(ownerPeer({ principal: {} })).toBe(false)
     expect(ownerPeer({ principal: { kind: 'share-viewer' } })).toBe(false)
     expect(ownerPeer({ principal: undefined })).toBe(false)
     expect(ownerPeer({ principal: null })).toBe(false)
